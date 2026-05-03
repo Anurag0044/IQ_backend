@@ -1,0 +1,36 @@
+{
+  "users": [
+    {
+      "email": "anuragbanerjee103@gmail.com",
+      "name": "Anurag Banerjee",
+      "picture": null,
+      "role": "admin",
+      "createdAt": "2026-05-03T09:53:11.345Z",
+      "lastLogin": "2026-05-03T17:39:54.480Z"
+    },
+    {
+      "email": "gamerspidey006@gmail.com",
+      "name": "Spidey Gamer",
+      "picture": null,
+      "role": "admin",
+      "createdAt": "2026-05-03T09:54:25.461Z",
+      "lastLogin": "2026-05-03T12:40:46.831Z"
+    },
+    {
+      "email": "anuragbanerjee106@gmail.com",
+      "name": "anurag part 2",
+      "picture": null,
+      "role": "user",
+      "createdAt": "2026-05-03T14:11:06.309Z",
+      "lastLogin": "2026-05-03T14:22:29.620Z"
+    },
+    {
+      "email": "anurag250253@arkajainuniversity.ac.in",
+      "name": "ANURAG BANERJEE",
+      "picture": null,
+      "role": "user",
+      "createdAt": "2026-05-03T15:09:45.696Z",
+      "lastLogin": "2026-05-03T15:11:40.259Z"
+    }
+  ]
+}

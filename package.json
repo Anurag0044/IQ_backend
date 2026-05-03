@@ -1,0 +1,29 @@
+{
+  "name": "cloudiq-backend",
+  "version": "1.0.0",
+  "description": "CloudIQ Backend API with IBM App ID Authentication",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "@ibm-cloud/cloudant": "^0.12.19",
+    "axios": "^1.16.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "helmet": "^8.0.0",
+    "ibm-watson": "^12.2.0",
+    "ibmcloud-appid": "^6.2.8",
+    "morgan": "^1.10.0",
+    "multer": "^2.1.1",
+    "passport": "^0.7.0",
+    "socket.io": "^4.8.3",
+    "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}

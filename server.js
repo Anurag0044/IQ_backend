@@ -69,6 +69,8 @@ io.on('connection', (socket) => {
 // ─────────────────────────────────────────────
 // 1. Security
 // ─────────────────────────────────────────────
+// Trust proxy is required for Render/Heroku to properly handle HTTPS and secure cookies
+app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 
 // ─────────────────────────────────────────────
@@ -91,15 +93,17 @@ app.use(morgan('dev'));
 // ─────────────────────────────────────────────
 // 4. Session — MUST be before Passport
 // ─────────────────────────────────────────────
+const isProduction = process.env.NODE_ENV === 'production';
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'cloudiq-fallback-secret',
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false,          // false for localhost (HTTP, not HTTPS)
-    httpOnly: true,         // JS cannot access cookie
+    secure: isProduction,         // true for Render (HTTPS)
+    httpOnly: true,               // JS cannot access cookie
     maxAge: 24 * 60 * 60 * 1000,  // 24 hours
-    sameSite: 'lax',        // protects against CSRF
+    sameSite: isProduction ? 'none' : 'lax', // 'none' required for cross-domain cookies on Render
   },
 }));
 

@@ -2,9 +2,12 @@
 // CloudIQ Backend - Main Server
 // ============================================
 // Complete auth flow:
-//   Login:  Frontend → /auth/login → IBM App ID → /auth/callback → Frontend /dashboard
+//   Login:  Frontend → /auth/login → IBM App ID → /auth/callback
+//           → Checks admin status in Cloudant
+//           → Admin: redirect to /admin  |  User: redirect to /dashboard
 //   Logout: Frontend → /auth/logout → destroy session → Frontend /
 //   Check:  Frontend → /auth/user → { loggedIn: true/false, user }
+//   Role:   Frontend → /api/user-role → { email, isAdmin }
 
 require('dotenv').config();
 
@@ -17,6 +20,7 @@ const morgan = require('morgan');
 const { WebAppStrategy } = require('ibmcloud-appid');
 
 const adminRoutes = require('./routes/admin');
+const adminDb = require('./services/adminDb');
 const userRoutes = require('./routes/user');
 const authRoutes = require('./routes/auth');
 const postsRoutes = require('./routes/posts');
@@ -24,6 +28,7 @@ const notificationsRoutes = require('./routes/notifications');
 const voiceRoutes = require('./routes/voice');
 const commentsRoutes = require('./routes/comments');
 const friendsRoutes = require('./routes/friends');
+const tutorialsRoutes = require('./routes/tutorials');
 
 const app = express();
 const http = require('http');
@@ -165,16 +170,25 @@ app.get('/auth/callback', (req, res, next) => {
     }
 
     // Log the user into the session
-    req.logIn(user, (loginErr) => {
+    req.logIn(user, async (loginErr) => {
       if (loginErr) {
         console.error('[AUTH] ❌ Session login error:', loginErr.message || loginErr);
         return res.redirect(FRONTEND_URL + '/?error=session_error');
       }
 
-      // ✅ SUCCESS — redirect to frontend dashboard
-      console.log('[AUTH] ✅ Login successful:', user.name || user.email || 'Unknown');
-      console.log('[AUTH] ✅ Redirecting to:', FRONTEND_URL + '/dashboard');
-      return res.redirect(FRONTEND_URL + '/dashboard');
+      // ✅ SUCCESS — check admin role BEFORE redirecting
+      const email = (user.email || (user.emails && user.emails[0]?.value) || '').toLowerCase();
+      console.log('[AUTH] ✅ Login successful:', user.name || email || 'Unknown');
+
+      try {
+        const isAdmin = await adminDb.checkIsAdmin(email);
+        const redirectPath = isAdmin ? '/admin' : '/dashboard';
+        console.log(`[AUTH] ✅ User is ${isAdmin ? 'ADMIN' : 'USER'} → Redirecting to: ${FRONTEND_URL}${redirectPath}`);
+        return res.redirect(FRONTEND_URL + redirectPath);
+      } catch (adminErr) {
+        console.error('[AUTH] ⚠️ Admin check failed, defaulting to /dashboard:', adminErr.message);
+        return res.redirect(FRONTEND_URL + '/dashboard');
+      }
     });
   })(req, res, next);
 });
@@ -225,7 +239,7 @@ app.get('/auth/logout', (req, res, next) => {
  * This is what keeps frontend and backend IN SYNC.
  * NEVER returns 401 — always returns JSON so frontend can handle it.
  */
-app.get('/auth/user', (req, res) => {
+app.get('/auth/user', async (req, res) => {
   // Check if user has an active session
   if (!req.isAuthenticated || !req.isAuthenticated()) {
     return res.json({
@@ -237,20 +251,28 @@ app.get('/auth/user', (req, res) => {
 
   const user = req.user;
   const roles = extractRoles(user);
+  const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
 
   // Sync user to database (creates them if they don't exist, updates lastLogin)
-  const db = require('./utils/db');
-  db.syncUser(user);
+  try {
+    const db = require('./utils/db');
+    db.syncUser(user);
+  } catch (e) { /* non-fatal */ }
 
-  const { checkAdminRole } = require('./middleware/auth');
-  const isAdmin = checkAdminRole(user);
+  // Async admin check against Cloudant
+  let isAdmin = false;
+  try {
+    isAdmin = await adminDb.checkIsAdmin(email);
+  } catch (e) {
+    console.error('[AUTH] /auth/user admin check error:', e.message);
+  }
 
   return res.json({
     loggedIn: true,
     success: true,
     user: {
       name: user.name || user.given_name || 'User',
-      email: user.email || user.emails?.[0]?.value || null,
+      email: email || null,
       picture: user.picture || null,
       isAdmin: isAdmin,
       roles: roles,
@@ -262,12 +284,14 @@ app.get('/auth/user', (req, res) => {
  * GET /auth/status
  * Quick auth check (lightweight, no user data)
  */
-app.get('/auth/status', (req, res) => {
+app.get('/auth/status', async (req, res) => {
   const authenticated = req.isAuthenticated ? req.isAuthenticated() : false;
   let isAdmin = false;
   if (authenticated && req.user) {
-    const { checkAdminRole } = require('./middleware/auth');
-    isAdmin = checkAdminRole(req.user);
+    try {
+      const email = (req.user.email || req.user.emails?.[0]?.value || '').toLowerCase();
+      isAdmin = await adminDb.checkIsAdmin(email);
+    } catch (e) { /* ignore */ }
   }
   res.json({ authenticated, isAdmin });
 });
@@ -276,7 +300,7 @@ app.get('/auth/status', (req, res) => {
  * GET /debug-user
  * Debug only — shows raw user object and role locations
  */
-app.get('/debug-user', (req, res) => {
+app.get('/debug-user', async (req, res) => {
   if (!req.isAuthenticated || !req.isAuthenticated()) {
     return res.json({
       loggedIn: false,
@@ -285,15 +309,19 @@ app.get('/debug-user', (req, res) => {
   }
   const user = req.user;
   const roles = extractRoles(user);
+  const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
 
   // Sync user here too just in case
-  const db = require('./utils/db');
-  db.syncUser(user);
+  try { const db = require('./utils/db'); db.syncUser(user); } catch (e) {}
+
+  let isAdmin = false;
+  try { isAdmin = await adminDb.checkIsAdmin(email); } catch (e) {}
 
   res.json({
     loggedIn: true,
+    email,
     extractedRoles: roles,
-    isAdmin: require('./middleware/auth').checkAdminRole(user),
+    isAdmin,
     rawUser: user,
   });
 });
@@ -303,6 +331,135 @@ app.get('/debug-user', (req, res) => {
 // ─────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({ service: 'CloudIQ Backend', status: 'running', timestamp: new Date().toISOString() });
+});
+
+// ═════════════════════════════════════════════
+//              ROLE + ADMIN MANAGEMENT APIs
+// ═════════════════════════════════════════════
+
+/**
+ * GET /api/user-role
+ * Verifies session and returns the user's email + isAdmin status.
+ * Frontend calls this AFTER login to decide which dashboard to show.
+ */
+app.get('/api/user-role', async (req, res) => {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
+  }
+
+  const user = req.user;
+  const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
+
+  if (!email) {
+    return res.status(400).json({ success: false, error: 'No email found in session.' });
+  }
+
+  try {
+    const isAdmin = await adminDb.checkIsAdmin(email);
+    const adminRole = isAdmin ? (await adminDb.getAdminRole(email)) : null;
+    return res.json({ success: true, email, isAdmin, adminRole });
+  } catch (err) {
+    console.error('[API] /api/user-role error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to check role.' });
+  }
+});
+
+/**
+ * POST /api/add-admin
+ * Adds a new admin email to the Cloudant 'admins' database.
+ * ONLY the super admin (ADMIN_EMAILS env var) can call this.
+ *
+ * Body: { "newAdminEmail": "admin@example.com" }
+ */
+app.post('/api/add-admin', async (req, res) => {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
+  }
+
+  const callerEmail = (
+    req.user.email || req.user.emails?.[0]?.value || ''
+  ).toLowerCase();
+
+  // Only the super admin can add other admins
+  if (!adminDb.isSuperAdmin(callerEmail)) {
+    console.warn(`[API] /api/add-admin: Non-super-admin attempt by ${callerEmail}`);
+    return res.status(403).json({
+      success: false,
+      error: 'Forbidden',
+      message: 'Only the super admin can add other admins.',
+    });
+  }
+
+  const { newAdminEmail } = req.body;
+  if (!newAdminEmail || typeof newAdminEmail !== 'string') {
+    return res.status(400).json({ success: false, error: 'newAdminEmail is required.' });
+  }
+
+  const result = await adminDb.addAdmin(newAdminEmail);
+  return res.status(result.success ? 200 : 400).json(result);
+});
+
+/**
+ * DELETE /api/remove-admin
+ * Removes an admin email from the Cloudant 'admins' database.
+ * ONLY the super admin can call this.
+ *
+ * Body: { "adminEmail": "admin@example.com" }
+ */
+app.delete('/api/remove-admin', async (req, res) => {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
+  }
+
+  const callerEmail = (
+    req.user.email || req.user.emails?.[0]?.value || ''
+  ).toLowerCase();
+
+  if (!adminDb.isSuperAdmin(callerEmail)) {
+    return res.status(403).json({
+      success: false,
+      error: 'Forbidden',
+      message: 'Only the super admin can remove admins.',
+    });
+  }
+
+  const { adminEmail } = req.body;
+  if (!adminEmail) {
+    return res.status(400).json({ success: false, error: 'adminEmail is required.' });
+  }
+
+  const result = await adminDb.removeAdmin(adminEmail);
+  return res.status(result.success ? 200 : 400).json(result);
+});
+
+/**
+ * GET /api/list-admins
+ * Returns a list of all admins (super admin + Cloudant admins).
+ * ONLY accessible by the super admin.
+ */
+app.get('/api/list-admins', async (req, res) => {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
+  }
+
+  const callerEmail = (
+    req.user.email || req.user.emails?.[0]?.value || ''
+  ).toLowerCase();
+
+  if (!adminDb.isSuperAdmin(callerEmail)) {
+    return res.status(403).json({
+      success: false,
+      error: 'Forbidden',
+      message: 'Only the super admin can list admins.',
+    });
+  }
+
+  try {
+    const admins = await adminDb.listAdmins();
+    return res.json({ success: true, admins });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ═════════════════════════════════════════════
@@ -316,6 +473,7 @@ app.use('/api/notifications', notificationsRoutes);
 app.use('/api/comments', commentsRoutes);
 app.use('/api/friends', friendsRoutes);
 app.use('/api/voice', voiceRoutes);
+app.use('/api/tutorials', tutorialsRoutes);
 
 // ─────────────────────────────────────────────
 // 404 + Error Handlers

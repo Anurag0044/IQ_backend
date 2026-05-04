@@ -1,194 +1,170 @@
 // ============================================
-// CloudIQ Backend - Admin Routes
+// CloudIQ Backend - Admin Routes (Role-Based)
 // ============================================
-// Protected routes accessible only to admin users
-// All routes here require both authentication AND admin role
+// Role hierarchy: main_admin > co_admin > elder_admin > junior_admin
+//
+// GET  /api/admin/list         — list all admins (any admin)
+// POST /api/admin/add          — add admin (main_admin / co_admin only)
+// PUT  /api/admin/:id/role     — change role (hierarchy enforced)
+// DELETE /api/admin/:id        — remove admin (hierarchy enforced)
+// GET  /api/admin/dashboard    — stats stub (any admin)
 
 const express = require('express');
 const { ensureAuthenticated, ensureAdmin } = require('../middleware/auth');
+const {
+  listAdmins,
+  addAdmin,
+  removeAdmin,
+  updateAdminRole,
+  getAdminRole,
+} = require('../services/adminDb');
+const { extractUserInfo } = require('../middleware/auth');
+const cloudant = require('../services/cloudantClient');
 
 const router = express.Router();
 
-// Apply both middleware to ALL admin routes
-router.use(ensureAuthenticated);
-router.use(ensureAdmin);
+// All admin routes require authentication + admin status
+router.use(ensureAuthenticated, ensureAdmin);
 
-/**
- * GET /api/admin/dashboard
- * Returns admin dashboard data (stats, overview)
- */
-router.get('/dashboard', (req, res) => {
-  const users = db.getAllUsers();
-  res.json({
-    success: true,
-    message: 'Welcome to the Admin Dashboard',
-    data: {
-      totalUsers: users.length,
-      activeSessions: 0,
-      totalCourses: 0,
-      systemHealth: 'operational',
-      lastUpdated: new Date().toISOString(),
-    },
-  });
-});
+// ─────────────────────────────────────────────
+// Helper: get requester's role
+// ─────────────────────────────────────────────
+async function requesterRole(req) {
+  const { email } = extractUserInfo(req.user);
+  return getAdminRole(email);
+}
 
-const db = require('../utils/db');
-
-/**
- * GET /api/admin/users
- * Returns list of all users (admin only)
- */
-router.get('/users', (req, res) => {
-  const users = db.getAllUsers();
-  res.json({
-    success: true,
-    message: 'User list retrieved successfully',
-    data: {
-      users: users,
-      total: users.length,
-      page: 1,
-      limit: users.length,
-    },
-  });
-});
-
-/**
- * POST /api/admin/users
- * Add a new user with a specific role
- */
-router.post('/users', (req, res) => {
-  const { email, role } = req.body;
-  if (!email || !role) {
-    return res.status(400).json({ success: false, message: 'Email and role are required' });
-  }
-  
+// ─────────────────────────────────────────────
+// GET /api/admin/dashboard
+// ─────────────────────────────────────────────
+router.get('/dashboard', async (req, res) => {
   try {
-    db.updateUserRole(email, role);
-    res.json({ success: true, message: `User ${email} added as ${role}` });
-  } catch (err) {
-    res.status(400).json({ success: false, message: err.message });
-  }
-});
+    // Count users in Cloudant users DB
+    let totalUsers = 0;
+    try {
+      const info = await cloudant.getDatabaseInformation({ db: 'users' });
+      totalUsers = info.result.doc_count || 0;
+    } catch (_) { /* db may not exist yet */ }
 
-/**
- * PUT /api/admin/users/:email/role
- * Update an existing user's role
- */
-router.put('/users/:email/role', (req, res) => {
-  const { email } = req.params;
-  const { role } = req.body;
-  
-  if (!role) {
-    return res.status(400).json({ success: false, message: 'Role is required' });
-  }
-  
-  try {
-    db.updateUserRole(email, role);
-    res.json({ success: true, message: `User ${email} updated to ${role}` });
-  } catch (err) {
-    res.status(400).json({ success: false, message: err.message });
-  }
-});
+    let totalPosts = 0;
+    try {
+      const info = await cloudant.getDatabaseInformation({ db: 'posts' });
+      totalPosts = info.result.doc_count || 0;
+    } catch (_) {}
 
-/**
- * DELETE /api/admin/users/:email
- * Remove a user
- */
-router.delete('/users/:email', (req, res) => {
-  const { email } = req.params;
-  
-  try {
-    db.deleteUser(email);
-    res.json({ success: true, message: `User ${email} deleted` });
-  } catch (err) {
-    res.status(400).json({ success: false, message: err.message });
-  }
-});
+    const { email } = extractUserInfo(req.user);
+    const myRole = await getAdminRole(email);
 
-/**
- * GET /api/admin/analytics
- * Returns platform analytics data (admin only)
- */
-router.get('/analytics', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Analytics data retrieved successfully',
-    data: {
-      dailyActiveUsers: 0,
-      weeklyActiveUsers: 0,
-      monthlyActiveUsers: 0,
-      courseCompletionRate: 0,
-      avgSessionDuration: '0m',
-      topCourses: [],
-    },
-  });
-});
-
-/**
- * GET /api/admin/settings
- * Returns platform-wide settings (admin only)
- */
-router.get('/settings', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Platform settings retrieved successfully',
-    data: {
-      maintenanceMode: false,
-      registrationEnabled: true,
-      maxUsersPerCourse: 100,
-      apiRateLimit: 1000,
-      features: {
-        voiceLearning: true,
-        aiChatbot: true,
-        community: true,
-        quiz: true,
+    return res.json({
+      success: true,
+      data: {
+        totalUsers,
+        totalPosts,
+        systemHealth: 'operational',
+        lastUpdated:  new Date().toISOString(),
+        myRole,
       },
-    },
-  });
+    });
+  } catch (err) {
+    console.error('[ADMIN] dashboard error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-/**
- * PUT /api/admin/settings
- * Updates platform-wide settings (admin only)
- */
-router.put('/settings', (req, res) => {
-  const updates = req.body;
-
-  // TODO: Validate and persist settings to database
-  console.log('[ADMIN] Settings update requested:', updates);
-
-  res.json({
-    success: true,
-    message: 'Platform settings updated successfully',
-    data: updates,
-  });
+// ─────────────────────────────────────────────
+// GET /api/admin/list
+// Any admin can view the list
+// ─────────────────────────────────────────────
+router.get('/list', async (req, res) => {
+  try {
+    const admins = await listAdmins();
+    return res.json({ success: true, admins });
+  } catch (err) {
+    console.error('[ADMIN] list error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-/**
- * GET /api/admin/roles
- * Returns App ID roles configuration (admin only)
- */
-router.get('/roles', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Roles retrieved successfully',
-    data: {
-      roles: [
-        {
-          id: process.env.ADMIN_ROLE_ID,
-          name: 'admin',
-          description: 'Admin of the CloudIQ platform',
-          permissions: ['manage_users', 'manage_courses', 'manage_settings', 'view_analytics'],
-        },
-        {
-          id: 'user-role-id',
-          name: 'user',
-          description: 'Regular platform user',
-          permissions: ['view_courses', 'take_quizzes', 'join_community'],
-        },
-      ],
-    },
-  });
+// ─────────────────────────────────────────────
+// POST /api/admin/add
+// Only main_admin and co_admin
+// ─────────────────────────────────────────────
+router.post('/add', async (req, res) => {
+  try {
+    const { email: addedByEmail } = extractUserInfo(req.user);
+    const myRole = await getAdminRole(addedByEmail);
+
+    if (!['main_admin', 'co_admin'].includes(myRole)) {
+      return res.status(403).json({ success: false, error: 'Only main_admin or co_admin can add admins' });
+    }
+
+    const { email, role } = req.body;
+    if (!email || !role) {
+      return res.status(400).json({ success: false, error: 'email and role are required' });
+    }
+
+    const result = await addAdmin(email, role, addedByEmail);
+    if (!result.success) return res.status(400).json({ success: false, error: result.message });
+    return res.status(201).json({ success: true, message: result.message });
+  } catch (err) {
+    console.error('[ADMIN] add error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// PUT /api/admin/:id/role
+// Role hierarchy enforced inside updateAdminRole
+// ─────────────────────────────────────────────
+router.put('/:id/role', async (req, res) => {
+  try {
+    const { email: updatedByEmail } = extractUserInfo(req.user);
+    const { id: targetEmail } = req.params;
+    const { role: newRole } = req.body;
+
+    if (!newRole) {
+      return res.status(400).json({ success: false, error: 'role is required' });
+    }
+
+    const result = await updateAdminRole(targetEmail, newRole, updatedByEmail);
+    if (!result.success) return res.status(400).json({ success: false, error: result.message });
+    return res.json({ success: true, message: result.message });
+  } catch (err) {
+    console.error('[ADMIN] update role error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// DELETE /api/admin/:id
+// Role hierarchy enforced inside removeAdmin
+// ─────────────────────────────────────────────
+router.delete('/:id', async (req, res) => {
+  try {
+    const { email: removedByEmail } = extractUserInfo(req.user);
+    const { id: targetEmail } = req.params;
+
+    const result = await removeAdmin(targetEmail, removedByEmail);
+    if (!result.success) return res.status(400).json({ success: false, error: result.message });
+    return res.json({ success: true, message: result.message });
+  } catch (err) {
+    console.error('[ADMIN] delete error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /api/admin/me/role
+// Returns the calling admin's own role
+// ─────────────────────────────────────────────
+router.get('/me/role', async (req, res) => {
+  try {
+    const { email } = extractUserInfo(req.user);
+    const role = await getAdminRole(email);
+    return res.json({ success: true, role, email });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 module.exports = router;

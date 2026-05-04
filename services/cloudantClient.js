@@ -28,6 +28,8 @@ const DATABASES = [
   'notifications',
   'communities',
   'friendships',
+  'admins',       // Stores additional admin emails (super admin is in ADMIN_EMAILS env)
+  'tutorials',    // Stores tutorial documents with Cloudinary image URLs
 ];
 
 /**

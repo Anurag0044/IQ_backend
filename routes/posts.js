@@ -8,12 +8,33 @@
 //   POST /api/posts/:id/like → like/unlike a post (auth required)
 
 const express = require('express');
+const multer  = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const cloudant = require('../services/cloudantClient');
+const { uploadBuffer, deleteImage } = require('../services/cloudinaryService');
 const { ensureAuthenticated, checkAdminRole, extractUserInfo } = require('../middleware/auth');
 
 const router = express.Router();
 const DB = 'posts';
+
+// ─────────────────────────────────────────────
+// Multer — post images (5 MB, jpeg/png/webp)
+// ─────────────────────────────────────────────
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only JPEG, PNG, or WEBP images are allowed.'), false);
+  },
+});
+
+function extractPublicId(url) {
+  if (!url) return null;
+  const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.[a-z]{2,5}$/i);
+  return match ? match[1] : null;
+}
 
 // ─────────────────────────────────────────────
 // GET /api/posts
@@ -43,32 +64,48 @@ router.get('/', async (req, res) => {
 // POST /api/posts/create
 // Auth required — creates a new post
 // ─────────────────────────────────────────────
-router.post('/create', ensureAuthenticated, async (req, res) => {
+router.post('/create', ensureAuthenticated, upload.single('image'), async (req, res) => {
   try {
     const { content } = req.body;
-
     if (!content || !content.trim()) {
       return res.status(400).json({ success: false, error: 'Content is required' });
     }
 
-    const { userId, email, username } = extractUserInfo(req.user);
+    const { userId, email, username: appIdUsername } = extractUserInfo(req.user);
+
+    // Try to get Cloudant profile for real-time username + avatar
+    let username     = appIdUsername;
+    let author_avatar = null;
+    try {
+      const profileDoc = (await cloudant.getDocument({ db: 'users', docId: userId })).result;
+      if (profileDoc.username)         username      = profileDoc.username;
+      if (profileDoc.profile_image_url) author_avatar = profileDoc.profile_image_url;
+    } catch (e) { /* profile not onboarded yet — use App ID values */ }
+
+    // Upload post image to Cloudinary if provided
+    let image_url       = null;
+    let image_public_id = null;
+    if (req.file) {
+      const result = await uploadBuffer(req.file.buffer, 'community_posts');
+      image_url       = result.secure_url;
+      image_public_id = result.public_id;
+    }
 
     const newPost = {
-      _id: uuidv4(),
-      user_id: userId,
-      email: email,
-      username: username,
-      content: content.trim(),
-      likes: [],
-      like_count: 0,
-      created_at: new Date().toISOString(),
+      _id:          uuidv4(),
+      user_id:      userId,
+      email,
+      username,
+      author_avatar,          // Cloudinary URL (or null)
+      content:      content.trim(),
+      image_url,              // Post image
+      image_public_id,
+      likes:        [],
+      like_count:   0,
+      created_at:   new Date().toISOString(),
     };
 
-    const response = await cloudant.postDocument({
-      db: DB,
-      document: newPost,
-    });
-
+    const response = await cloudant.postDocument({ db: DB, document: newPost });
     if (response.result.ok) {
       res.json({ success: true, post: newPost });
     } else {
@@ -106,6 +143,13 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
     // Only owner or admin can delete
     if (post.user_id !== userId && !isAdmin) {
       return res.status(403).json({ success: false, error: 'You can only delete your own posts.' });
+    }
+
+    // Delete image from Cloudinary if it exists
+    const publicId = post.image_public_id || extractPublicId(post.image_url);
+    if (publicId) {
+      try { await deleteImage(publicId); }
+      catch (e) { console.error('[POSTS] Cloudinary delete failed:', e.message); }
     }
 
     const deleteResponse = await cloudant.deleteDocument({

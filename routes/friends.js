@@ -7,29 +7,81 @@ const router = express.Router();
 const DB = 'friendships';
 
 // ─────────────────────────────────────────────
+// GET /api/friends/discover
+// Returns all onboarded users (excluding self)
+// with friendship status attached
+// ─────────────────────────────────────────────
+router.get('/discover', ensureAuthenticated, async (req, res) => {
+  try {
+    const { userId } = extractUserInfo(req.user);
+
+    // Fetch all users from users DB
+    const usersRes = await cloudant.postAllDocs({ db: 'users', includeDocs: true });
+    const allUsers = usersRes.result.rows
+      .map(r => r.doc)
+      .filter(doc => doc && !doc._id.startsWith('_design') && doc._id !== userId && doc.is_onboarded);
+
+    // Fetch all friendships involving current user
+    const fsRes = await cloudant.postFind({
+      db: DB,
+      selector: {
+        $or: [{ sender_id: userId }, { receiver_id: userId }]
+      }
+    });
+    const friendships = fsRes.result.docs;
+
+    // Enrich each user with friendship status
+    const users = allUsers.map(u => {
+      const fs = friendships.find(
+        f => f.sender_id === u._id || f.receiver_id === u._id
+      );
+      let friendship_status = 'none';       // not connected
+      let friendship_id     = null;
+      let i_sent            = false;
+
+      if (fs) {
+        friendship_status = fs.status;     // 'pending' | 'accepted'
+        friendship_id     = fs._id;
+        i_sent            = fs.sender_id === userId;
+      }
+
+      return {
+        user_id:              u._id,
+        username:             u.username || u.email?.split('@')[0] || 'CloudIQ User',
+        email:                u.email,
+        profile_image_url:    u.profile_image_url || null,
+        purpose:              u.purpose || '',
+        friendship_status,
+        friendship_id,
+        i_sent,               // true = I sent the request, false = they sent it
+      };
+    });
+
+    return res.json({ success: true, users });
+  } catch (err) {
+    console.error('[FRIENDS] Discover error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to fetch users' });
+  }
+});
+
+// ─────────────────────────────────────────────
 // POST /api/friends/request
-// Send a friend request
+// Send a connection request
 // ─────────────────────────────────────────────
 router.post('/request', ensureAuthenticated, async (req, res) => {
   try {
     const { receiver_id } = req.body;
-    const { userId: sender_id } = extractUserInfo(req.user);
+    const { userId: sender_id, username } = extractUserInfo(req.user);
 
-    if (!receiver_id) {
-      return res.status(400).json({ success: false, error: 'receiver_id is required' });
-    }
+    if (!receiver_id) return res.status(400).json({ success: false, error: 'receiver_id is required' });
+    if (sender_id === receiver_id) return res.status(400).json({ success: false, error: 'Cannot send request to yourself' });
 
-    // Prevent self request
-    if (sender_id === receiver_id) {
-      return res.status(400).json({ success: false, error: 'Cannot send friend request to yourself' });
-    }
-
-    // Check for existing request (pending or accepted) in both directions
+    // Check for existing request in either direction
     const checkQuery = await cloudant.postFind({
       db: DB,
       selector: {
         $or: [
-          { sender_id: sender_id, receiver_id: receiver_id },
+          { sender_id, receiver_id },
           { sender_id: receiver_id, receiver_id: sender_id }
         ]
       }
@@ -37,156 +89,199 @@ router.post('/request', ensureAuthenticated, async (req, res) => {
 
     if (checkQuery.result.docs.length > 0) {
       const existing = checkQuery.result.docs[0];
-      if (existing.status === 'pending') {
-        return res.status(400).json({ success: false, error: 'Friend request already pending' });
-      } else {
-        return res.status(400).json({ success: false, error: 'Already friends' });
-      }
+      return res.status(400).json({
+        success: false,
+        error: existing.status === 'pending' ? 'Request already pending' : 'Already connected'
+      });
     }
+
+    // Get sender profile for real username
+    let senderName = username;
+    try {
+      const profile = (await cloudant.getDocument({ db: 'users', docId: sender_id })).result;
+      if (profile.username) senderName = profile.username;
+    } catch (e) { /* use App ID name */ }
 
     const friendship = {
       _id: uuidv4(),
       sender_id,
+      sender_name: senderName,
       receiver_id,
       status: 'pending',
       created_at: new Date().toISOString()
     };
 
-    const response = await cloudant.postDocument({
-      db: DB,
-      document: friendship
-    });
+    const response = await cloudant.postDocument({ db: DB, document: friendship });
 
     if (response.result.ok) {
-      // Optional: emit real-time notification
+      // Real-time notification
       const io = req.app.get('io');
       const userSockets = req.app.get('userSockets');
       if (io && userSockets) {
         const targetSocketId = userSockets.get(receiver_id);
         if (targetSocketId) {
-          io.to(targetSocketId).emit('new_notification', {
+          io.to(targetSocketId).emit('friend_request', {
             type: 'friend_request',
-            message: 'You have a new friend request',
+            message: `${senderName} wants to connect with you`,
             sender_id,
+            sender_name: senderName,
+            friendship_id: friendship._id,
             created_at: friendship.created_at
           });
         }
       }
-
-      res.json({ success: true, message: 'Friend request sent', friendship });
+      return res.json({ success: true, friendship });
     } else {
-      res.status(500).json({ success: false, error: 'Failed to send request' });
+      return res.status(500).json({ success: false, error: 'Failed to send request' });
     }
   } catch (err) {
     console.error('[FRIENDS] Request error:', err.message);
-    res.status(500).json({ success: false, error: 'Failed to process request' });
+    return res.status(500).json({ success: false, error: 'Failed to process request' });
   }
 });
 
 // ─────────────────────────────────────────────
 // POST /api/friends/accept
-// Accept a friend request
+// Accept a connection request
 // ─────────────────────────────────────────────
 router.post('/accept', ensureAuthenticated, async (req, res) => {
   try {
     const { request_id } = req.body;
     const { userId } = extractUserInfo(req.user);
 
-    if (!request_id) {
-      return res.status(400).json({ success: false, error: 'request_id is required' });
-    }
+    if (!request_id) return res.status(400).json({ success: false, error: 'request_id is required' });
 
-    // Fetch the request
     let friendship;
     try {
-      const docResponse = await cloudant.getDocument({ db: DB, docId: request_id });
-      friendship = docResponse.result;
+      friendship = (await cloudant.getDocument({ db: DB, docId: request_id })).result;
     } catch (err) {
-      if (err.status === 404) {
-        return res.status(404).json({ success: false, error: 'Friend request not found' });
-      }
+      if (err.status === 404) return res.status(404).json({ success: false, error: 'Request not found' });
       throw err;
     }
 
-    // Ensure only the receiver can accept it
-    if (friendship.receiver_id !== userId) {
-      return res.status(403).json({ success: false, error: 'Not authorized to accept this request' });
-    }
+    if (friendship.receiver_id !== userId) return res.status(403).json({ success: false, error: 'Not authorized' });
+    if (friendship.status === 'accepted') return res.status(400).json({ success: false, error: 'Already accepted' });
 
-    if (friendship.status === 'accepted') {
-      return res.status(400).json({ success: false, error: 'Request already accepted' });
-    }
+    // Get acceptor's profile name
+    let acceptorName = userId;
+    try {
+      const profile = (await cloudant.getDocument({ db: 'users', docId: userId })).result;
+      if (profile.username) acceptorName = profile.username;
+    } catch (e) { /* use id */ }
 
     friendship.status = 'accepted';
     friendship.updated_at = new Date().toISOString();
 
-    const updateResponse = await cloudant.postDocument({
-      db: DB,
-      document: friendship
-    });
+    const updateResponse = await cloudant.postDocument({ db: DB, document: friendship });
 
     if (updateResponse.result.ok) {
-      // Optional: emit real-time notification
       const io = req.app.get('io');
       const userSockets = req.app.get('userSockets');
       if (io && userSockets) {
         const targetSocketId = userSockets.get(friendship.sender_id);
         if (targetSocketId) {
-          io.to(targetSocketId).emit('new_notification', {
+          io.to(targetSocketId).emit('friend_accept', {
             type: 'friend_accept',
-            message: 'Your friend request was accepted',
+            message: `${acceptorName} accepted your connection request`,
             receiver_id: userId,
+            acceptor_name: acceptorName,
             created_at: friendship.updated_at
           });
         }
       }
-
-      res.json({ success: true, message: 'Friend request accepted', friendship });
+      return res.json({ success: true, friendship });
     } else {
-      res.status(500).json({ success: false, error: 'Failed to accept request' });
+      return res.status(500).json({ success: false, error: 'Failed to accept' });
     }
   } catch (err) {
     console.error('[FRIENDS] Accept error:', err.message);
-    res.status(500).json({ success: false, error: 'Failed to accept request' });
+    return res.status(500).json({ success: false, error: 'Failed to accept' });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /api/friends/reject
+// Reject or withdraw a connection request
+// ─────────────────────────────────────────────
+router.post('/reject', ensureAuthenticated, async (req, res) => {
+  try {
+    const { request_id } = req.body;
+    const { userId } = extractUserInfo(req.user);
+
+    if (!request_id) return res.status(400).json({ success: false, error: 'request_id is required' });
+
+    let friendship;
+    try {
+      friendship = (await cloudant.getDocument({ db: DB, docId: request_id })).result;
+    } catch (err) {
+      if (err.status === 404) return res.status(404).json({ success: false, error: 'Request not found' });
+      throw err;
+    }
+
+    // Only sender (withdraw) or receiver (reject) can act
+    if (friendship.sender_id !== userId && friendship.receiver_id !== userId) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+
+    await cloudant.deleteDocument({ db: DB, docId: friendship._id, rev: friendship._rev });
+    return res.json({ success: true, message: 'Request rejected/withdrawn' });
+  } catch (err) {
+    console.error('[FRIENDS] Reject error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to reject request' });
+  }
+});
+
+// ─────────────────────────────────────────────
+// DELETE /api/friends/:id
+// Remove an accepted connection
+// ─────────────────────────────────────────────
+router.delete('/:id', ensureAuthenticated, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId } = extractUserInfo(req.user);
+
+    let friendship;
+    try {
+      friendship = (await cloudant.getDocument({ db: DB, docId: id })).result;
+    } catch (err) {
+      if (err.status === 404) return res.status(404).json({ success: false, error: 'Connection not found' });
+      throw err;
+    }
+
+    if (friendship.sender_id !== userId && friendship.receiver_id !== userId) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+
+    await cloudant.deleteDocument({ db: DB, docId: friendship._id, rev: friendship._rev });
+    return res.json({ success: true, message: 'Connection removed' });
+  } catch (err) {
+    console.error('[FRIENDS] Remove error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to remove connection' });
   }
 });
 
 // ─────────────────────────────────────────────
 // GET /api/friends
-// Get friend list (both accepted and pending)
+// Get friend list (accepted + pending)
 // ─────────────────────────────────────────────
 router.get('/', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
 
-    // Find all where sender_id = userId OR receiver_id = userId
     const response = await cloudant.postFind({
       db: DB,
-      selector: {
-        $or: [
-          { sender_id: userId },
-          { receiver_id: userId }
-        ]
-      }
+      selector: { $or: [{ sender_id: userId }, { receiver_id: userId }] }
     });
 
     const list = response.result.docs;
-    
-    // Split into categories for convenience
-    const accepted = list.filter(f => f.status === 'accepted');
-    const pendingSent = list.filter(f => f.status === 'pending' && f.sender_id === userId);
+    const accepted         = list.filter(f => f.status === 'accepted');
+    const pendingSent     = list.filter(f => f.status === 'pending' && f.sender_id === userId);
     const pendingReceived = list.filter(f => f.status === 'pending' && f.receiver_id === userId);
 
-    res.json({
-      success: true,
-      friends: accepted,
-      pendingSent,
-      pendingReceived,
-      all: list
-    });
+    return res.json({ success: true, friends: accepted, pendingSent, pendingReceived, all: list });
   } catch (err) {
     console.error('[FRIENDS] Get list error:', err.message);
-    res.status(500).json({ success: false, error: 'Failed to fetch friends' });
+    return res.status(500).json({ success: false, error: 'Failed to fetch friends' });
   }
 });
 

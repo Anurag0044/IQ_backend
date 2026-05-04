@@ -10,6 +10,7 @@ const express = require('express');
 const passport = require('passport');
 const { WebAppStrategy } = require('ibmcloud-appid');
 const { checkAdminRole } = require('../middleware/auth');
+const adminDb = require('../services/adminDb');
 
 const router = express.Router();
 const { ensureAuthenticated } = require('../middleware/authMiddleware');
@@ -32,15 +33,22 @@ router.get('/login', passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
 router.get('/callback', passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
   failureRedirect: `${process.env.FRONTEND_URL}/?error=auth_failed`,
   failureFlash: false,
-}), (req, res) => {
-  // Authentication successful — redirect to frontend dashboard
-  console.log(`[AUTH] User authenticated successfully: ${req.user?.name || req.user?.email || 'Unknown'}`);
-  
-  // Log roles for debugging
-  const roles = extractRoles(req.user);
-  console.log(`[AUTH] User roles: ${JSON.stringify(roles)}`);
-  
-  res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+}), async (req, res) => {
+  // Authentication successful — check role and redirect appropriately
+  const email = (
+    req.user?.email || req.user?.emails?.[0]?.value || ''
+  ).toLowerCase();
+  console.log(`[AUTH] User authenticated: ${req.user?.name || email || 'Unknown'}`);
+
+  try {
+    const isAdmin = await adminDb.checkIsAdmin(email);
+    const redirectPath = isAdmin ? '/admin' : '/dashboard';
+    console.log(`[AUTH] Redirecting ${email} to ${process.env.FRONTEND_URL}${redirectPath}`);
+    res.redirect(`${process.env.FRONTEND_URL}${redirectPath}`);
+  } catch (err) {
+    console.error('[AUTH] Admin check error, defaulting to /dashboard:', err.message);
+    res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+  }
 });
 
 /**
@@ -85,7 +93,7 @@ router.get('/logout', (req, res, next) => {
  * FIXED: Returns loggedIn:false instead of 401 when not authenticated
  * This allows the frontend to check auth state without triggering redirects
  */
-router.get('/user', (req, res) => {
+router.get('/user', async (req, res) => {
   // If not authenticated, return loggedIn: false (NOT a 401)
   if (!req.isAuthenticated || !req.isAuthenticated()) {
     return res.json({
@@ -97,7 +105,15 @@ router.get('/user', (req, res) => {
 
   const user = req.user;
   const roles = extractRoles(user);
-  const isAdmin = roles.includes(process.env.ADMIN_ROLE_NAME || 'admin');
+  const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
+
+  // Async admin check against Cloudant + ADMIN_EMAILS
+  let isAdmin = false;
+  try {
+    isAdmin = await adminDb.checkIsAdmin(email);
+  } catch (e) {
+    console.error('[AUTH] /auth/user admin check failed:', e.message);
+  }
 
   // Build a safe user response (no tokens exposed to frontend)
   res.json({
@@ -105,7 +121,7 @@ router.get('/user', (req, res) => {
     success: true,
     user: {
       name: user.name || user.given_name || 'User',
-      email: user.email || user.emails?.[0]?.value || null,
+      email: email || null,
       picture: user.picture || null,
       isAdmin: isAdmin,
       roles: roles,
@@ -117,13 +133,15 @@ router.get('/user', (req, res) => {
  * GET /auth/status
  * Quick check if user is authenticated (no sensitive data)
  */
-router.get('/status', (req, res) => {
+router.get('/status', async (req, res) => {
   const authenticated = req.isAuthenticated ? req.isAuthenticated() : false;
   let isAdmin = false;
 
   if (authenticated && req.user) {
-    const roles = extractRoles(req.user);
-    isAdmin = roles.includes(process.env.ADMIN_ROLE_NAME || 'admin');
+    try {
+      const email = (req.user.email || req.user.emails?.[0]?.value || '').toLowerCase();
+      isAdmin = await adminDb.checkIsAdmin(email);
+    } catch (e) { /* ignore */ }
   }
 
   res.json({

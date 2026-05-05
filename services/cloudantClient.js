@@ -9,14 +9,46 @@ const { IamAuthenticator } = require('ibm-cloud-sdk-core');
 
 require('dotenv').config();
 
-const authenticator = new IamAuthenticator({
-  apikey: process.env.CLOUDANT_APIKEY,
-});
+const hasCloudantCredentials = Boolean(process.env.CLOUDANT_APIKEY && process.env.CLOUDANT_URL);
 
-const cloudant = CloudantV1.newInstance({
-  authenticator: authenticator,
-});
-cloudant.setServiceUrl(process.env.CLOUDANT_URL);
+function createUnavailableCloudantClient() {
+  const missingParams = [];
+  if (!process.env.CLOUDANT_APIKEY) missingParams.push('CLOUDANT_APIKEY');
+  if (!process.env.CLOUDANT_URL) missingParams.push('CLOUDANT_URL');
+
+  const unavailableError = new Error(
+    `Cloudant is not configured. Missing environment variable(s): ${missingParams.join(', ')}`
+  );
+
+  const rejectUnavailable = async () => {
+    throw unavailableError;
+  };
+
+  return {
+    getDatabaseInformation: rejectUnavailable,
+    putDatabase: rejectUnavailable,
+    getDesignDocument: rejectUnavailable,
+    postDocument: rejectUnavailable,
+    getDocument: rejectUnavailable,
+    postView: rejectUnavailable,
+    postFind: rejectUnavailable,
+    setServiceUrl: () => { },
+  };
+}
+
+const cloudant = hasCloudantCredentials
+  ? (() => {
+    const authenticator = new IamAuthenticator({
+      apikey: process.env.CLOUDANT_APIKEY,
+    });
+
+    const client = CloudantV1.newInstance({
+      authenticator: authenticator,
+    });
+    client.setServiceUrl(process.env.CLOUDANT_URL);
+    return client;
+  })()
+  : createUnavailableCloudantClient();
 
 // ─────────────────────────────────────────────
 // All databases required by the platform
@@ -156,6 +188,11 @@ async function createDesignDocs() {
  * Initialize all databases and indexes on startup.
  */
 async function initAllDatabases() {
+  if (!hasCloudantCredentials) {
+    console.warn('[CLOUDANT] Skipping startup initialization because Cloudant credentials are missing.');
+    return;
+  }
+
   console.log('[CLOUDANT] Initializing databases...');
   for (const db of DATABASES) {
     await ensureDatabase(db);
@@ -165,6 +202,8 @@ async function initAllDatabases() {
   console.log('[CLOUDANT] ✅ All databases ready.');
 }
 
-initAllDatabases();
+initAllDatabases().catch((err) => {
+  console.error('[CLOUDANT] Startup initialization failed:', err.message);
+});
 
 module.exports = cloudant;

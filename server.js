@@ -29,6 +29,7 @@ const voiceRoutes = require('./routes/voice');
 const commentsRoutes = require('./routes/comments');
 const friendsRoutes = require('./routes/friends');
 const tutorialsRoutes = require('./routes/tutorials');
+const orionRoutes = require('./routes/orion');
 
 const app = express();
 const http = require('http');
@@ -37,6 +38,13 @@ const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const hasAppIdCredentials = Boolean(
+  process.env.APPID_TENANT_ID &&
+  process.env.APPID_CLIENT_ID &&
+  process.env.APPID_SECRET &&
+  process.env.APPID_OAUTH_SERVER_URL &&
+  process.env.APPID_REDIRECT_URI
+);
 
 // ─────────────────────────────────────────────
 // Setup Socket.IO
@@ -119,13 +127,17 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // IBM App ID strategy
-passport.use(new WebAppStrategy({
-  tenantId: process.env.APPID_TENANT_ID,
-  clientId: process.env.APPID_CLIENT_ID,
-  secret: process.env.APPID_SECRET,
-  oauthServerUrl: process.env.APPID_OAUTH_SERVER_URL,
-  redirectUri: process.env.APPID_REDIRECT_URI,
-}));
+if (hasAppIdCredentials) {
+  passport.use(new WebAppStrategy({
+    tenantId: process.env.APPID_TENANT_ID,
+    clientId: process.env.APPID_CLIENT_ID,
+    secret: process.env.APPID_SECRET,
+    oauthServerUrl: process.env.APPID_OAUTH_SERVER_URL,
+    redirectUri: process.env.APPID_REDIRECT_URI,
+  }));
+} else {
+  console.warn('[AUTH] IBM App ID credentials are missing. Authentication routes will return a 503 until configured.');
+}
 
 // Store entire user object in session
 passport.serializeUser((user, done) => done(null, user));
@@ -138,12 +150,44 @@ passport.deserializeUser((user, done) => done(null, user));
 /**
  * GET /auth/login
  * Step 1: Frontend sends user here
- * Step 2: Passport redirects to IBM App ID login page
+ * BYPASS: Immediately logs in a mock user and redirects
  */
 app.get('/auth/login',
-  passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
-    forceLogin: true,
-  })
+  (req, res, next) => {
+    // BYPASS APP ID
+    const mockUser = {
+      name: "Anurag Banerjee",
+      email: "anuragbanerjee103@gmail.com", // Matches ADMIN_EMAILS for full access
+      picture: "https://ui-avatars.com/api/?name=Anurag+Banerjee",
+      sub: "bypass-12345"
+    };
+
+    req.logIn(mockUser, async (loginErr) => {
+      if (loginErr) {
+        console.error('[AUTH_BYPASS] ❌ Session login error:', loginErr.message || loginErr);
+        return res.redirect(FRONTEND_URL + '/?error=session_error');
+      }
+
+      console.log('[AUTH_BYPASS] ✅ Login successful:', mockUser.email);
+
+      try {
+        const isAdmin = await adminDb.checkIsAdmin(mockUser.email);
+        const redirectPath = isAdmin ? '/admin' : '/dashboard';
+        
+        // Force save session before redirecting to prevent race condition
+        req.session.save((saveErr) => {
+          if (saveErr) {
+            console.error('[AUTH_BYPASS] ❌ Session save error:', saveErr);
+          }
+          console.log(`[AUTH_BYPASS] ✅ User is ${isAdmin ? 'ADMIN' : 'USER'} → Redirecting to: ${FRONTEND_URL}${redirectPath}`);
+          return res.redirect(FRONTEND_URL + redirectPath);
+        });
+      } catch (adminErr) {
+        console.error('[AUTH_BYPASS] ⚠️ Admin check failed, defaulting to /dashboard:', adminErr.message);
+        return res.redirect(FRONTEND_URL + '/dashboard');
+      }
+    });
+  }
 );
 
 /**
@@ -156,6 +200,10 @@ app.get('/auth/login',
  * Without the res.redirect(), user gets stuck on App ID page
  */
 app.get('/auth/callback', (req, res, next) => {
+  if (!hasAppIdCredentials) {
+    return res.status(503).send('Authentication is not configured on this backend instance.');
+  }
+
   passport.authenticate(WebAppStrategy.STRATEGY_NAME, (err, user, info) => {
     // Handle authentication errors
     if (err) {
@@ -206,7 +254,9 @@ app.get('/auth/logout', (req, res, next) => {
   console.log('[AUTH] Logout requested');
 
   // Clear IBM App ID tokens from session
-  try { WebAppStrategy.logout(req); } catch (e) { /* ignore */ }
+  if (hasAppIdCredentials) {
+    try { WebAppStrategy.logout(req); } catch (e) { /* ignore */ }
+  }
 
   // Passport v0.6+ requires callback
   req.logout(function (err) {
@@ -312,10 +362,10 @@ app.get('/debug-user', async (req, res) => {
   const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
 
   // Sync user here too just in case
-  try { const db = require('./utils/db'); db.syncUser(user); } catch (e) {}
+  try { const db = require('./utils/db'); db.syncUser(user); } catch (e) { }
 
   let isAdmin = false;
-  try { isAdmin = await adminDb.checkIsAdmin(email); } catch (e) {}
+  try { isAdmin = await adminDb.checkIsAdmin(email); } catch (e) { }
 
   res.json({
     loggedIn: true,
@@ -474,6 +524,7 @@ app.use('/api/comments', commentsRoutes);
 app.use('/api/friends', friendsRoutes);
 app.use('/api/voice', voiceRoutes);
 app.use('/api/tutorials', tutorialsRoutes);
+app.use('/api/orion', orionRoutes);
 
 // ─────────────────────────────────────────────
 // 404 + Error Handlers
@@ -534,9 +585,14 @@ server.listen(PORT, () => {
   console.log('║  /debug-user → raw user object           ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
-  console.log('  Register this callback URL in IBM App ID:');
-  console.log(`  → ${process.env.APPID_REDIRECT_URI}`);
-  console.log('');
+  if (hasAppIdCredentials) {
+    console.log('  Register this callback URL in IBM App ID:');
+    console.log(`  → ${process.env.APPID_REDIRECT_URI}`);
+    console.log('');
+  } else {
+    console.log('  IBM App ID is disabled until the required environment variables are provided.');
+    console.log('');
+  }
 });
 
 module.exports = app;

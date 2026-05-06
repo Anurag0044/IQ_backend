@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const { DuckDuckGoSearch } = require('@langchain/community/tools/duckduckgo_search');
+const { ensureAuthenticated } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -141,7 +142,7 @@ function validateOllamaBaseUrl() {
   return { ok: true };
 }
 
-router.post('/chat', async (req, res) => {
+router.post('/chat', ensureAuthenticated, async (req, res) => {
   const query = (req.body?.query || '').toString().trim();
   const requestedModelId = (req.body?.model || '').toString().trim();
 

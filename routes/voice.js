@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const { IamAuthenticator } = require('ibm-watson/auth');
 const SpeechToTextV1 = require('ibm-watson/speech-to-text/v1');
+const { ensureAuthenticated } = require('../middleware/auth');
 
 const router = express.Router();
 const storage = multer.memoryStorage();
@@ -23,7 +24,7 @@ try {
  * POST /api/voice/transcribe
  * Accepts an audio file and transcribes it using IBM Watson
  */
-router.post('/transcribe', upload.single('audio'), async (req, res) => {
+router.post('/transcribe', ensureAuthenticated, upload.single('audio'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No audio file uploaded' });

@@ -150,45 +150,15 @@ passport.deserializeUser((user, done) => done(null, user));
 /**
  * GET /auth/login
  * Step 1: Frontend sends user here
- * BYPASS: Immediately logs in a mock user and redirects
+ * Step 2: Redirect to IBM App ID for authentication
  */
-app.get('/auth/login',
-  (req, res, next) => {
-    // BYPASS APP ID
-    const mockUser = {
-      name: "Anurag Banerjee",
-      email: "anuragbanerjee103@gmail.com", // Matches ADMIN_EMAILS for full access
-      picture: "https://ui-avatars.com/api/?name=Anurag+Banerjee",
-      sub: "bypass-12345"
-    };
-
-    req.logIn(mockUser, async (loginErr) => {
-      if (loginErr) {
-        console.error('[AUTH_BYPASS] ❌ Session login error:', loginErr.message || loginErr);
-        return res.redirect(FRONTEND_URL + '/?error=session_error');
-      }
-
-      console.log('[AUTH_BYPASS] ✅ Login successful:', mockUser.email);
-
-      try {
-        const isAdmin = await adminDb.checkIsAdmin(mockUser.email);
-        const redirectPath = isAdmin ? '/admin' : '/dashboard';
-        
-        // Force save session before redirecting to prevent race condition
-        req.session.save((saveErr) => {
-          if (saveErr) {
-            console.error('[AUTH_BYPASS] ❌ Session save error:', saveErr);
-          }
-          console.log(`[AUTH_BYPASS] ✅ User is ${isAdmin ? 'ADMIN' : 'USER'} → Redirecting to: ${FRONTEND_URL}${redirectPath}`);
-          return res.redirect(FRONTEND_URL + redirectPath);
-        });
-      } catch (adminErr) {
-        console.error('[AUTH_BYPASS] ⚠️ Admin check failed, defaulting to /dashboard:', adminErr.message);
-        return res.redirect(FRONTEND_URL + '/dashboard');
-      }
-    });
+app.get('/auth/login', (req, res, next) => {
+  if (!hasAppIdCredentials) {
+    return res.status(503).send('Authentication is not configured on this backend instance.');
   }
-);
+
+  return passport.authenticate(WebAppStrategy.STRATEGY_NAME)(req, res, next);
+});
 
 /**
  * GET /auth/callback

@@ -6,12 +6,12 @@
 // PUT  /api/user/profile     — update username / profile image
 
 const express = require('express');
-const multer  = require('multer');
+const multer = require('multer');
 const cloudant = require('../services/cloudantClient');
 const { uploadBuffer, deleteImage } = require('../services/cloudinaryService');
 const { ensureAuthenticated } = require('../middleware/auth');
 
-const router  = express.Router();
+const router = express.Router();
 const DB_NAME = 'users'; // existing Cloudant DB
 
 // ─────────────────────────────────────────────
@@ -106,7 +106,7 @@ router.get('/courses', ensureAuthenticated, (req, res) => {
 router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), async (req, res) => {
   try {
     const userId = getUserId(req);
-    const email  = getUserEmail(req);
+    const email = getUserEmail(req);
     const { username, purpose, referral_source, professional_role } = req.body;
 
     if (!username?.trim()) {
@@ -114,27 +114,27 @@ router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), 
     }
 
     // Upload profile image to Cloudinary
-    let profile_image_url       = null;
+    let profile_image_url = null;
     let profile_image_public_id = null;
 
     if (req.file) {
       const result = await uploadBuffer(req.file.buffer, 'profile_images');
-      profile_image_url       = result.secure_url;
+      profile_image_url = result.secure_url;
       profile_image_public_id = result.public_id;
     }
 
     const userDoc = {
-      _id:                    userId,
+      _id: userId,
       email,
-      username:               username.trim(),
-      professional_role:      professional_role?.trim() || '',
-      purpose:                purpose?.trim() || '',
-      referral_source:        referral_source || '',
+      username: username.trim(),
+      professional_role: professional_role?.trim() || '',
+      purpose: purpose?.trim() || '',
+      referral_source: referral_source || '',
       profile_image_url,
       profile_image_public_id,
-      is_onboarded:           true,
-      created_at:             new Date().toISOString(),
-      updated_at:             new Date().toISOString(),
+      is_onboarded: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
     const response = await cloudant.postDocument({ db: DB_NAME, document: userDoc });
@@ -163,7 +163,7 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
     // Fetch existing document (_rev required for Cloudant update)
     const existing = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
 
-    let profile_image_url       = existing.profile_image_url;
+    let profile_image_url = existing.profile_image_url;
     let profile_image_public_id = existing.profile_image_public_id;
 
     if (req.file) {
@@ -174,19 +174,19 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
         catch (e) { console.error('[User] Old image delete failed:', e.message); }
       }
       const result = await uploadBuffer(req.file.buffer, 'profile_images');
-      profile_image_url       = result.secure_url;
+      profile_image_url = result.secure_url;
       profile_image_public_id = result.public_id;
     }
 
     const updated = {
       ...existing,
-      username:               username?.trim()           || existing.username,
-      professional_role:      professional_role !== undefined
-                                ? professional_role.trim()
-                                : (existing.professional_role || ''),
+      username: username?.trim() || existing.username,
+      professional_role: professional_role !== undefined
+        ? professional_role.trim()
+        : (existing.professional_role || ''),
       profile_image_url,
       profile_image_public_id,
-      updated_at:             new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
     await cloudant.putDocument({ db: DB_NAME, docId: userId, document: updated });
@@ -220,9 +220,9 @@ router.delete('/profile-image', ensureAuthenticated, async (req, res) => {
 
     const updated = {
       ...existing,
-      profile_image_url:       null,
+      profile_image_url: null,
       profile_image_public_id: null,
-      updated_at:              new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
     await cloudant.putDocument({ db: DB_NAME, docId: userId, document: updated });
 

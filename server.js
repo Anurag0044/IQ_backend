@@ -24,6 +24,7 @@ const adminDb = require('./services/adminDb');
 const userRoutes = require('./routes/user');
 const authRoutes = require('./routes/auth');
 const postsRoutes = require('./routes/posts');
+const communityRoutes = require('./routes/community');
 const notificationsRoutes = require('./routes/notifications');
 const voiceRoutes = require('./routes/voice');
 const commentsRoutes = require('./routes/comments');
@@ -66,6 +67,14 @@ io.on('connection', (socket) => {
   socket.on('register', (userId) => {
     userSockets.set(userId, socket.id);
     console.log(`[SOCKET] User mapped: ${userId} -> ${socket.id}`);
+  });
+
+  socket.on('watch_post', (postId) => {
+    if (postId) socket.join(`post:${postId}`);
+  });
+
+  socket.on('unwatch_post', (postId) => {
+    if (postId) socket.leave(`post:${postId}`);
   });
 
   socket.on('disconnect', () => {
@@ -489,6 +498,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/posts', postsRoutes);
+app.use('/api/communities', communityRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/comments', commentsRoutes);
 app.use('/api/friends', friendsRoutes);

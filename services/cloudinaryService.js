@@ -69,6 +69,41 @@ function uploadBuffer(buffer, folder = 'tutorials', publicId = undefined) {
 }
 
 /**
+ * Upload a video buffer to Cloudinary.
+ * @param {Buffer} buffer
+ * @param {string} folder
+ * @param {string} [publicId]
+ * @returns {Promise<{ secure_url: string, public_id: string }>}
+ */
+function uploadVideoBuffer(buffer, folder = 'videos', publicId = undefined) {
+  if (!CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
+    return Promise.reject(
+      new Error(
+        'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, ' +
+        'CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in backend/.env, ' +
+        'then restart the server.'
+      )
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    const opts = {
+      folder,
+      resource_type: 'video',
+      allowed_formats: ['mp4', 'webm', 'mov', 'm4v'],
+    };
+    if (publicId) opts.public_id = publicId;
+
+    const stream = cloudinary.uploader.upload_stream(opts, (err, result) => {
+      if (err) return reject(err);
+      resolve({ secure_url: result.secure_url, public_id: result.public_id });
+    });
+
+    stream.end(buffer);
+  });
+}
+
+/**
  * Delete an image from Cloudinary by its public_id.
  * @param {string} publicId
  * @returns {Promise<void>}
@@ -82,4 +117,19 @@ async function deleteImage(publicId) {
   }
 }
 
-module.exports = { uploadBuffer, deleteImage };
+/**
+ * Delete media from Cloudinary by public_id and resource type.
+ * @param {string} publicId
+ * @param {'image'|'video'} resourceType
+ * @returns {Promise<void>}
+ */
+async function deleteMedia(publicId, resourceType = 'image') {
+  if (!publicId) return;
+  try {
+    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+  } catch (err) {
+    console.error('[Cloudinary] Failed to delete media:', publicId, err.message);
+  }
+}
+
+module.exports = { uploadBuffer, uploadVideoBuffer, deleteImage, deleteMedia };

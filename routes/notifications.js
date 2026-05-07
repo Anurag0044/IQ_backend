@@ -35,4 +35,53 @@ router.get('/', ensureAuthenticated, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// PATCH /api/notifications/:id/read
+// Auth required — marks a notification as read
+// ─────────────────────────────────────────────
+router.patch('/:id/read', ensureAuthenticated, async (req, res) => {
+  try {
+    const { userId } = extractUserInfo(req.user);
+    const notificationId = req.params.id;
+
+    let notification;
+    try {
+      notification = (await cloudant.getDocument({ db: DB, docId: notificationId })).result;
+    } catch (err) {
+      if (err.status === 404) {
+        return res.status(404).json({ success: false, error: 'Notification not found' });
+      }
+      throw err;
+    }
+
+    if (notification.user_id !== userId) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+
+    if (notification.read) {
+      return res.json({ success: true, notification });
+    }
+
+    const updated = {
+      ...notification,
+      read: true,
+      read_at: new Date().toISOString(),
+    };
+
+    const updateResponse = await cloudant.postDocument({
+      db: DB,
+      document: updated,
+    });
+
+    if (updateResponse.result.ok) {
+      return res.json({ success: true, notification: updated });
+    }
+
+    return res.status(500).json({ success: false, error: 'Failed to update notification' });
+  } catch (err) {
+    console.error('[NOTIFICATIONS] Read update error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to mark notification as read' });
+  }
+});
+
 module.exports = router;

@@ -59,9 +59,13 @@ const DATABASES = [
   'comments',
   'notifications',
   'communities',
+  'community_requests',
+  'community_memberships',
   'friendships',
   'admins',       // Stores additional admin emails (super admin is in ADMIN_EMAILS env)
   'tutorials',    // Stores tutorial documents with Cloudinary image URLs
+  'tutorial_media',
+  'upload_metadata',
 ];
 
 /**
@@ -158,6 +162,67 @@ async function createDesignDocs() {
         views: {
           by_member: {
             map: 'function(doc) { if (doc.members) { doc.members.forEach(function(m) { emit(m, null); }); } }',
+          },
+        },
+      },
+    },
+    // Community requests: query by community + status, and by requester
+    {
+      db: 'community_requests',
+      docId: '_design/community_requests',
+      doc: {
+        _id: '_design/community_requests',
+        views: {
+          by_community_status: {
+            map: 'function(doc) { if (doc.community_id && doc.status) emit([doc.community_id, doc.status, doc.created_at], null); }',
+          },
+          by_requester: {
+            map: 'function(doc) { if (doc.requester_id) emit([doc.requester_id, doc.created_at], null); }',
+          },
+        },
+      },
+    },
+    // Community memberships: query by community + user
+    {
+      db: 'community_memberships',
+      docId: '_design/community_memberships',
+      doc: {
+        _id: '_design/community_memberships',
+        views: {
+          by_community: {
+            map: 'function(doc) { if (doc.community_id) emit([doc.community_id, doc.user_id], null); }',
+          },
+          by_user: {
+            map: 'function(doc) { if (doc.user_id) emit([doc.user_id, doc.community_id], null); }',
+          },
+        },
+      },
+    },
+    // Tutorial media: query by tutorial
+    {
+      db: 'tutorial_media',
+      docId: '_design/tutorial_media',
+      doc: {
+        _id: '_design/tutorial_media',
+        views: {
+          by_tutorial: {
+            map: 'function(doc) { if (doc.tutorial_id) emit([doc.tutorial_id, doc.created_at], null); }',
+          },
+        },
+      },
+    },
+    // Upload metadata: query by owner and context
+    {
+      db: 'upload_metadata',
+      docId: '_design/upload_metadata',
+      doc: {
+        _id: '_design/upload_metadata',
+        views: {
+          by_owner: {
+            map: 'function(doc) { if (doc.owner_id) emit([doc.owner_id, doc.created_at], null); }',
+          },
+          by_context: {
+            map: 'function(doc) { if (doc.context_type && doc.context_id) emit([doc.context_type, doc.context_id, doc.created_at], null); }',
           },
         },
       },

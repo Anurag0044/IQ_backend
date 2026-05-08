@@ -32,9 +32,9 @@ const DB_UNREAD = 'unread_states';
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
-// ─────────────────────────────────────────────
-// Multer — chat media + attachments
-// ─────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// Multer Ã¢â‚¬â€ chat media + attachments
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_BYTES },
@@ -53,11 +53,13 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-// ─── Cached community fetch ──────────────────────────────────────────────────
-async function getCommunityOr404(communityId) {
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Cached community fetch Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function getCommunityOr404(communityId, { bustCache = false } = {}) {
   const cacheKey = `comm:${communityId}`;
-  const cached = communityCache.get(cacheKey);
-  if (cached) return cached;
+  if (!bustCache) {
+    const cached = communityCache.get(cacheKey);
+    if (cached) return cached;
+  }
 
   try {
     const doc = (await cloudant.getDocument({ db: DB_COMMUNITIES, docId: communityId })).result;
@@ -69,17 +71,17 @@ async function getCommunityOr404(communityId) {
   }
 }
 
-// ─── Cached membership check ────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Cached membership check Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 async function isCommunityMember(userId, community) {
   if (!userId || !community) return false;
 
   // In-document array (zero reads)
   if (Array.isArray(community.members) && community.members.includes(userId)) return true;
 
-  // Cache check
+  // Cache check (positive only)
   const cacheKey = `mem:${userId}:${community._id}`;
   const cached = membershipCache.get(cacheKey);
-  if (cached !== undefined) return cached;
+  if (cached === true) return true;
 
   // Indexed view query
   try {
@@ -91,15 +93,30 @@ async function isCommunityMember(userId, community) {
       limit: 1,
     });
     const isMember = (res.result.rows || []).length > 0;
-    membershipCache.set(cacheKey, isMember);
-    return isMember;
+    if (isMember) membershipCache.set(cacheKey, true);
+    if (isMember) return true;
   } catch (err) {
     console.warn('[DISCUSSIONS] Membership lookup failed:', err.message);
+  }
+
+  // Fallback to postFind if view is missing/fails
+  try {
+    const fallback = await cloudant.postFind({
+      db: DB_MEMBERSHIPS,
+      selector: { community_id: community._id, user_id: userId, membership_status: 'active' },
+      limit: 1,
+      fields: ['_id'],
+    });
+    const found = (fallback.result.docs || []).length > 0;
+    if (found) membershipCache.set(cacheKey, true);
+    return found;
+  } catch (findErr) {
+    console.warn('[DISCUSSIONS] postFind membership fallback also failed:', findErr.message);
     return false;
   }
 }
 
-// ─── Cached admin check ─────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Cached admin check Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 async function getCachedAdminStatus(user) {
   const { email } = extractUserInfo(user);
   if (!email) return false;
@@ -140,26 +157,27 @@ async function getChannelOr404(channelId) {
   }
 }
 
+// All joined members can see all channels.
+// Only mod-only channels remain restricted to moderators.
 function canAccessChannel({ channel, userId, isAdmin, isMod }) {
   if (!channel) return false;
   if (isAdmin) return true;
   if (channel.visibility === 'mods') return Boolean(isMod);
-  if (channel.visibility === 'restricted') {
-    return Array.isArray(channel.allowed_member_ids) && channel.allowed_member_ids.includes(userId);
-  }
+  // 'members', 'restricted', or anything else â€” any community member can see
   return true;
 }
 
-// ─────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 // Channels
-// ─────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 // GET /api/discussions/communities/:communityId/channels
 router.get('/communities/:communityId/channels', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
     const isAdmin = await getCachedAdminStatus(req.user);
-    const community = await getCommunityOr404(req.params.communityId);
+    // Bust community cache so stale members[] arrays don't block recently-joined users
+    const community = await getCommunityOr404(req.params.communityId, { bustCache: true });
     if (!community) return res.status(404).json({ success: false, error: 'Community not found' });
 
     const access = await ensureCanAccessCommunity(userId, community, isAdmin);
@@ -167,16 +185,14 @@ router.get('/communities/:communityId/channels', ensureAuthenticated, async (req
 
     const isMod = await isCommunityModerator(userId, community, isAdmin);
 
-    const response = await cloudant.postView({
+    // postFind â€” no design document required; works on any Cloudant instance
+    const findRes = await cloudant.postFind({
       db: DB_CHANNELS,
-      ddoc: 'channels',
-      view: 'by_community',
-      startkey: [community._id],
-      endkey: [community._id, {}],
-      includeDocs: true,
+      selector: { community_id: community._id },
+      limit: 200,
     });
 
-    const allChannels = (response.result.rows || []).map((r) => r.doc).filter(Boolean);
+    const allChannels = (findRes.result.docs || []).filter(Boolean);
 
     const channels = allChannels
       .filter((ch) => canAccessChannel({ channel: ch, userId, isAdmin, isMod }))
@@ -197,33 +213,33 @@ router.post('/communities/:communityId/channels', ensureAuthenticated, async (re
       return res.status(400).json({ success: false, error: 'Channel name is required' });
     }
 
-    const { userId } = extractUserInfo(req.user);
+    const { userId, email } = extractUserInfo(req.user);
     const isAdmin = await getCachedAdminStatus(req.user);
-    const community = await getCommunityOr404(req.params.communityId);
+    const community = await getCommunityOr404(req.params.communityId, { bustCache: true });
     if (!community) return res.status(404).json({ success: false, error: 'Community not found' });
 
     const access = await ensureCanAccessCommunity(userId, community, isAdmin);
     if (!access.ok) return res.status(access.status).json({ success: false, error: access.error });
 
-    const isMod = await isCommunityModerator(userId, community, isAdmin);
-    if (!isMod) {
-      return res.status(403).json({ success: false, error: 'Only community moderators can create channels' });
+    // Only the community owner can create channels
+    const isOwnerById = userId && community.owner_id === userId;
+    const isOwnerByEmail = email && community.owner_email &&
+      String(community.owner_email).toLowerCase() === String(email).toLowerCase();
+    if (!isOwnerById && !isOwnerByEmail) {
+      return res.status(403).json({ success: false, error: 'Only the community owner can create channels' });
     }
 
     const normalizedName = String(name).trim().replace(/\s+/g, '-').toLowerCase();
 
-    // ── Duplicate channel name guard (server-side) ──────────────────────────
+    // Duplicate channel name guard — postFind, no design document required
     try {
-      const existing = await cloudant.postView({
+      const existing = await cloudant.postFind({
         db: DB_CHANNELS,
-        ddoc: 'channels',
-        view: 'by_community',
-        startkey: [community._id],
-        endkey: [community._id, {}],
-        includeDocs: true,
+        selector: { community_id: community._id, name: normalizedName },
+        limit: 1,
+        fields: ['_id', 'name'],
       });
-      const existingChannels = (existing.result.rows || []).map(r => r.doc).filter(Boolean);
-      const duplicate = existingChannels.find(ch => ch.name === normalizedName);
+      const duplicate = (existing.result.docs || [])[0] || null;
       if (duplicate) {
         return res.status(409).json({ success: false, error: `Channel '${normalizedName}' already exists`, channel: duplicate });
       }
@@ -268,7 +284,7 @@ router.delete('/communities/:communityId/channels/:channelId', ensureAuthenticat
   try {
     const { userId } = extractUserInfo(req.user);
     const isAdmin = await getCachedAdminStatus(req.user);
-    const community = await getCommunityOr404(req.params.communityId);
+    const community = await getCommunityOr404(req.params.communityId, { bustCache: true });
     if (!community) return res.status(404).json({ success: false, error: 'Community not found' });
 
     const isMod = await isCommunityModerator(userId, community, isAdmin);
@@ -288,8 +304,8 @@ router.delete('/communities/:communityId/channels/:channelId', ensureAuthenticat
         db: DB_MESSAGES,
         ddoc: 'messages',
         view: 'by_channel_created_at',
-        startkey: [channel._id],
-        endkey: [channel._id, {}],
+        startKey: [channel._id],
+        endKey: [channel._id, {}],
         includeDocs: true,
         limit: 1000,
       });
@@ -339,9 +355,9 @@ router.delete('/communities/:communityId/channels/:channelId', ensureAuthenticat
   }
 });
 
-// ─────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 // Messages
-// ─────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 // GET /api/discussions/channels/:channelId/messages?limit=50&before=ISO
 router.get('/channels/:channelId/messages', ensureAuthenticated, async (req, res) => {
@@ -351,7 +367,7 @@ router.get('/channels/:channelId/messages', ensureAuthenticated, async (req, res
     const channel = await getChannelOr404(req.params.channelId);
     if (!channel) return res.status(404).json({ success: false, error: 'Channel not found' });
 
-    const community = await getCommunityOr404(channel.community_id);
+    const community = await getCommunityOr404(channel.community_id, { bustCache: true });
     const access = await ensureCanAccessCommunity(userId, community, isAdmin);
     if (!access.ok) return res.status(access.status).json({ success: false, error: access.error });
 
@@ -363,20 +379,21 @@ router.get('/channels/:channelId/messages', ensureAuthenticated, async (req, res
     const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
     const before = req.query.before ? String(req.query.before) : null;
 
-    const viewRes = await cloudant.postView({
+    // postFind — no design document required
+    const selector = before
+      ? { channel_id: channel._id, created_at: { $lt: before } }
+      : { channel_id: channel._id };
+
+    const findRes = await cloudant.postFind({
       db: DB_MESSAGES,
-      ddoc: 'messages',
-      view: 'by_channel_created_at',
-      startKey: before ? [channel._id, before] : [channel._id, {}],
-      endKey: [channel._id, ''],
-      includeDocs: true,
+      selector,
+      sort: [{ created_at: 'desc' }],
       limit,
-      descending: true,
     });
 
-    const messages = (viewRes.result.rows || [])
-      .map((r) => r.doc)
-      .filter((doc) => doc && !doc._id.startsWith('_design'));
+    const messages = (findRes.result.docs || [])
+      .filter((doc) => doc && !doc._id.startsWith('_design'))
+      .reverse(); // return in ascending order (oldest first) for display
 
     return res.json({ success: true, messages });
   } catch (err) {
@@ -398,7 +415,7 @@ router.post('/channels/:channelId/messages', ensureAuthenticated, async (req, re
     const channel = await getChannelOr404(req.params.channelId);
     if (!channel) return res.status(404).json({ success: false, error: 'Channel not found' });
 
-    const community = await getCommunityOr404(channel.community_id);
+    const community = await getCommunityOr404(channel.community_id, { bustCache: true });
     const access = await ensureCanAccessCommunity(userId, community, isAdmin);
     if (!access.ok) return res.status(access.status).json({ success: false, error: access.error });
 
@@ -536,7 +553,7 @@ router.post(
         return res.status(500).json({ success: false, error: 'Failed to create message' });
       }
 
-      // ── Sync message to Firebase (Firebase is source of truth for rendering) ──
+      // Ã¢â€â‚¬Ã¢â€â‚¬ Sync message to Firebase (Firebase is source of truth for rendering) Ã¢â€â‚¬Ã¢â€â‚¬
       try {
         if (firebaseService.db) {
           const firebaseMessage = {
@@ -560,7 +577,7 @@ router.post(
         console.warn('[DISCUSSIONS] Firebase sync failed for message:', firebaseErr.message);
       }
 
-      // NOTE: Do NOT emit via Socket.IO here — Firebase onValue is the single
+      // NOTE: Do NOT emit via Socket.IO here Ã¢â‚¬â€ Firebase onValue is the single
       // rendering source of truth. Emitting both causes double-append on client.
 
       return res.status(201).json({ success: true, message: messageDoc });
@@ -707,7 +724,7 @@ router.post('/messages/:messageId/reactions', ensureAuthenticated, async (req, r
   }
 });
 
-// POST /api/discussions/channels/:channelId/read — marks channel as read (reset unread)
+// POST /api/discussions/channels/:channelId/read Ã¢â‚¬â€ marks channel as read (reset unread)
 router.post('/channels/:channelId/read', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
@@ -769,7 +786,7 @@ router.post('/channels/:channelId/read', ensureAuthenticated, async (req, res) =
   }
 });
 
-// GET /api/discussions/communities/:communityId/unreads — get unread counts
+// GET /api/discussions/communities/:communityId/unreads Ã¢â‚¬â€ get unread counts
 router.get('/communities/:communityId/unreads', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
@@ -779,8 +796,8 @@ router.get('/communities/:communityId/unreads', ensureAuthenticated, async (req,
       db: DB_UNREAD,
       ddoc: 'unread_states',
       view: 'by_user',
-      startkey: [userId],
-      endkey: [userId, {}],
+      startKey: [userId],
+      endKey: [userId, {}],
       includeDocs: true,
       limit: 500,
     });
@@ -801,3 +818,4 @@ router.get('/communities/:communityId/unreads', ensureAuthenticated, async (req,
 });
 
 module.exports = router;
+

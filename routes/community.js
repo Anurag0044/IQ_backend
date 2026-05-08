@@ -231,8 +231,8 @@ router.get('/', async (req, res) => {
         db: MEMBERS_DB,
         ddoc: 'community_memberships',
         view: 'by_user',
-        startkey: [userId],
-        endkey: [userId, {}],
+        startKey: [userId],
+        endKey: [userId, {}],
         includeDocs: true,
         limit: 1000,
       });
@@ -277,8 +277,8 @@ router.get('/', async (req, res) => {
           db: MEMBERS_DB,
           ddoc: 'community_memberships',
           view: 'by_user',
-          startkey: [currentUserId],
-          endkey: [currentUserId, {}],
+          startKey: [currentUserId],
+          endKey: [currentUserId, {}],
           includeDocs: true,
           limit: 1000
         });
@@ -296,6 +296,13 @@ router.get('/', async (req, res) => {
       }
       return sanitized;
     });
+
+    if (mine) {
+      console.log('[COMMUNITIES]', {
+        userId: currentUserId || null,
+        communityCount: sanitizedDocs.length,
+      });
+    }
 
     return res.json({ success: true, communities: sanitizedDocs });
   } catch (err) {
@@ -563,8 +570,8 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
         db: MEMBERS_DB,
         ddoc: 'community_memberships',
         view: 'by_community',
-        startkey: [community._id],
-        endkey: [community._id, {}],
+        startKey: [community._id],
+        endKey: [community._id, {}],
         includeDocs: true,
         limit: 1000
       });
@@ -581,8 +588,8 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
         db: 'channels',
         ddoc: 'channels',
         view: 'by_community',
-        startkey: [community._id],
-        endkey: [community._id, {}],
+        startKey: [community._id],
+        endKey: [community._id, {}],
         includeDocs: true,
         limit: 100
       });
@@ -596,8 +603,8 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
             db: 'messages',
             ddoc: 'messages',
             view: 'by_channel_created_at',
-            startkey: [channelDoc._id],
-            endkey: [channelDoc._id, {}],
+            startKey: [channelDoc._id],
+            endKey: [channelDoc._id, {}],
             includeDocs: true,
             limit: 1000
           });
@@ -691,8 +698,8 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
           db: REQUESTS_DB,
           ddoc: 'community_requests',
           view: 'by_requester',
-          startkey: [userId],
-          endkey: [userId, {}],
+          startKey: [userId],
+          endKey: [userId, {}],
           includeDocs: true,
         });
 
@@ -851,8 +858,8 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
           db: 'channels',
           ddoc: 'channels',
           view: 'by_community',
-          startkey: [community._id],
-          endkey: [community._id, {}],
+          startKey: [community._id],
+          endKey: [community._id, {}],
           limit: 100,
         });
         const channelIds = (channelsRes.result.rows || []).map(r => r.key[0] ? r.id : null).filter(Boolean);
@@ -860,8 +867,8 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
           db: 'channels',
           ddoc: 'channels',
           view: 'by_community',
-          startkey: [community._id],
-          endkey: [community._id, {}],
+          startKey: [community._id],
+          endKey: [community._id, {}],
           includeDocs: true,
           limit: 100,
         });
@@ -918,8 +925,8 @@ router.post('/:id/request', ensureAuthenticated, async (req, res) => {
       db: REQUESTS_DB,
       ddoc: 'community_requests',
       view: 'by_requester',
-      startkey: [userId],
-      endkey: [userId, {}],
+      startKey: [userId],
+      endKey: [userId, {}],
       includeDocs: true,
     });
 
@@ -1137,3 +1144,4 @@ router.post('/:id/requests/:requestId/reject', ensureAuthenticated, async (req, 
 });
 
 module.exports = router;
+

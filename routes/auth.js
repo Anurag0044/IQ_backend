@@ -9,7 +9,7 @@
 const express = require('express');
 const passport = require('passport');
 const { WebAppStrategy } = require('ibmcloud-appid');
-const { checkAdminRole } = require('../middleware/auth');
+const { checkAdminRole, extractUserInfo } = require('../middleware/auth');
 const adminDb = require('../services/adminDb');
 
 const router = express.Router();
@@ -104,6 +104,7 @@ router.get('/user', async (req, res) => {
   }
 
   const user = req.user;
+  const { userId } = extractUserInfo(user);
   const roles = extractRoles(user);
   const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
 
@@ -120,6 +121,8 @@ router.get('/user', async (req, res) => {
     loggedIn: true,
     success: true,
     user: {
+      sub: userId || null,
+      userId: userId || null,
       name: user.name || user.given_name || 'User',
       email: email || null,
       picture: user.picture || null,

@@ -210,11 +210,32 @@ router.post('/communities/:communityId/channels', ensureAuthenticated, async (re
       return res.status(403).json({ success: false, error: 'Only community moderators can create channels' });
     }
 
+    const normalizedName = String(name).trim().replace(/\s+/g, '-').toLowerCase();
+
+    // ── Duplicate channel name guard (server-side) ──────────────────────────
+    try {
+      const existing = await cloudant.postView({
+        db: DB_CHANNELS,
+        ddoc: 'channels',
+        view: 'by_community',
+        startkey: [community._id],
+        endkey: [community._id, {}],
+        includeDocs: true,
+      });
+      const existingChannels = (existing.result.rows || []).map(r => r.doc).filter(Boolean);
+      const duplicate = existingChannels.find(ch => ch.name === normalizedName);
+      if (duplicate) {
+        return res.status(409).json({ success: false, error: `Channel '${normalizedName}' already exists`, channel: duplicate });
+      }
+    } catch (dupErr) {
+      console.warn('[DISCUSSIONS] Duplicate check failed (proceeding):', dupErr.message);
+    }
+
     const vis = visibility || 'members';
     const channelDoc = {
       _id: uuidv4(),
       community_id: community._id,
-      name: String(name).trim().replace(/\s+/g, '-').toLowerCase(),
+      name: normalizedName,
       topic: topic ? String(topic).trim() : null,
       type: 'text',
       visibility: vis,
@@ -228,7 +249,7 @@ router.post('/communities/:communityId/channels', ensureAuthenticated, async (re
     const write = await cloudant.postDocument({ db: DB_CHANNELS, document: channelDoc });
     if (!write.result.ok) return res.status(500).json({ success: false, error: 'Failed to create channel' });
 
-    // Sync channel metadata to Firebase
+    // Sync channel metadata to Firebase (non-blocking)
     firebaseService.syncChannel(channelDoc).catch(err => console.error('[DISCUSSIONS] Firebase sync failed:', err));
 
     const io = req.app.get('io');
@@ -238,6 +259,83 @@ router.post('/communities/:communityId/channels', ensureAuthenticated, async (re
   } catch (err) {
     console.error('[DISCUSSIONS] Create channel error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to create channel' });
+  }
+});
+
+// DELETE /api/discussions/communities/:communityId/channels/:channelId
+// Mods and community creator only
+router.delete('/communities/:communityId/channels/:channelId', ensureAuthenticated, async (req, res) => {
+  try {
+    const { userId } = extractUserInfo(req.user);
+    const isAdmin = await getCachedAdminStatus(req.user);
+    const community = await getCommunityOr404(req.params.communityId);
+    if (!community) return res.status(404).json({ success: false, error: 'Community not found' });
+
+    const isMod = await isCommunityModerator(userId, community, isAdmin);
+    if (!isMod) {
+      return res.status(403).json({ success: false, error: 'Only community moderators can delete channels' });
+    }
+
+    const channel = await getChannelOr404(req.params.channelId);
+    if (!channel) return res.status(404).json({ success: false, error: 'Channel not found' });
+    if (channel.community_id !== community._id) {
+      return res.status(403).json({ success: false, error: 'Channel does not belong to this community' });
+    }
+
+    // Delete all messages in this channel from Cloudant
+    try {
+      const msgs = await cloudant.postView({
+        db: DB_MESSAGES,
+        ddoc: 'messages',
+        view: 'by_channel_created_at',
+        startkey: [channel._id],
+        endkey: [channel._id, {}],
+        includeDocs: true,
+        limit: 1000,
+      });
+      for (const row of (msgs.result.rows || [])) {
+        if (row.doc) {
+          await cloudant.deleteDocument({ db: DB_MESSAGES, docId: row.doc._id, rev: row.doc._rev }).catch(() => {});
+        }
+      }
+    } catch (msgErr) {
+      console.warn('[DISCUSSIONS] Failed to delete channel messages:', msgErr.message);
+    }
+
+    // Delete unread states for this channel
+    try {
+      const unreads = await cloudant.postView({
+        db: DB_UNREAD,
+        ddoc: 'unread_states',
+        view: 'by_channel',
+        key: channel._id,
+        includeDocs: true,
+        limit: 1000,
+      });
+      for (const row of (unreads.result.rows || [])) {
+        if (row.doc) {
+          await cloudant.deleteDocument({ db: DB_UNREAD, docId: row.doc._id, rev: row.doc._rev }).catch(() => {});
+        }
+      }
+    } catch (unrErr) {
+      console.warn('[DISCUSSIONS] Failed to delete channel unreads:', unrErr.message);
+    }
+
+    // Delete from Cloudant
+    await cloudant.deleteDocument({ db: DB_CHANNELS, docId: channel._id, rev: channel._rev });
+
+    // Cleanup Firebase data for this channel
+    firebaseService.deleteChannel(channel._id).catch(err =>
+      console.warn('[DISCUSSIONS] Firebase channel cleanup failed:', err.message)
+    );
+
+    const io = req.app.get('io');
+    if (io) io.to(`community:${community._id}`).emit('channel_deleted', { channel_id: channel._id, community_id: community._id });
+
+    return res.json({ success: true, message: 'Channel deleted' });
+  } catch (err) {
+    console.error('[DISCUSSIONS] Delete channel error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to delete channel' });
   }
 });
 
@@ -438,24 +536,22 @@ router.post(
         return res.status(500).json({ success: false, error: 'Failed to create message' });
       }
 
-      // Sync message to Firebase for realtime
+      // ── Sync message to Firebase (Firebase is source of truth for rendering) ──
       try {
-        const admin = require('firebase-admin');
-        const firebaseMessage = {
-          _id: messageDoc._id,
-          channel_id: messageDoc.channel_id,
-          community_id: messageDoc.community_id,
-          sender_id: messageDoc.sender_id,
-          sender_name: messageDoc.sender_name,
-          type: messageDoc.type,
-          content: messageDoc.content,
-          media: messageDoc.media,
-          pinned: messageDoc.pinned,
-          pinned_at: messageDoc.pinned_at,
-          created_at: messageDoc.created_at,
-        };
-        // Write directly to Firebase messages node
         if (firebaseService.db) {
+          const firebaseMessage = {
+            _id: messageDoc._id,
+            channel_id: messageDoc.channel_id,
+            community_id: messageDoc.community_id,
+            sender_id: messageDoc.sender_id,
+            sender_name: messageDoc.sender_name,
+            type: messageDoc.type,
+            content: messageDoc.content || null,
+            media: messageDoc.media,
+            pinned: messageDoc.pinned,
+            pinned_at: messageDoc.pinned_at || null,
+            created_at: messageDoc.created_at,
+          };
           const messageRef = firebaseService.db.ref(`messages/${channel._id}/${messageDoc._id}`);
           await messageRef.set(firebaseMessage);
           console.log(`[DISCUSSIONS] Synced media message to Firebase: ${messageDoc._id}`);
@@ -464,8 +560,8 @@ router.post(
         console.warn('[DISCUSSIONS] Firebase sync failed for message:', firebaseErr.message);
       }
 
-      const io = req.app.get('io');
-      if (io) io.to(`channel:${channel._id}`).emit('new_message', messageDoc);
+      // NOTE: Do NOT emit via Socket.IO here — Firebase onValue is the single
+      // rendering source of truth. Emitting both causes double-append on client.
 
       return res.status(201).json({ success: true, message: messageDoc });
     } catch (err) {

@@ -102,7 +102,7 @@ async function isCommunityMember(userId, community) {
   }
 }
 
-async function createMembership(userId, username, userEmail, community) {
+async function createMembership(userId, username, userEmail, community, role = 'member') {
   if (!userId || !community) return;
   try {
     const existing = await cloudant.postView({
@@ -113,21 +113,28 @@ async function createMembership(userId, username, userEmail, community) {
       includeDocs: true,
       limit: 1,
     });
-    if ((existing.result.rows || []).length > 0) return;
+    if ((existing.result.rows || []).length > 0) return; // Already a member — idempotent
 
+    const now = new Date().toISOString();
     await cloudant.postDocument({
       db: MEMBERS_DB,
       document: {
         _id: uuidv4(),
+        type: 'community_membership',
         community_id: community._id,
+        community_name: community.name || '',
         user_id: userId,
         username: username || '',
         user_email: userEmail || '',
-        status: 'active',
+        role,
+        membership_status: 'active',
         visibility_access: community.visibility || 'public',
-        created_at: new Date().toISOString(),
+        joined_at: now,
+        created_at: now,
+        updated_at: now,
       },
     });
+    console.log(`[COMMUNITIES] Membership created: user=${userId} community=${community._id} role=${role}`);
   } catch (err) {
     console.warn('[COMMUNITIES] Create membership failed:', err.message);
   }
@@ -220,12 +227,28 @@ router.get('/', async (req, res) => {
       }
 
       const { userId } = extractUserInfo(req.user);
-      const response = await cloudant.postView({
-        db: DB,
-        ddoc: 'communities',
-        view: 'by_member',
-        key: userId,
+      const membershipResponse = await cloudant.postView({
+        db: MEMBERS_DB,
+        ddoc: 'community_memberships',
+        view: 'by_user',
+        startkey: [userId],
+        endkey: [userId, {}],
         includeDocs: true,
+        limit: 1000,
+      });
+
+      const communityIds = (membershipResponse.result.rows || [])
+        .map((row) => row.doc?.community_id)
+        .filter(Boolean);
+
+      if (communityIds.length === 0) {
+        return res.json({ success: true, communities: [] });
+      }
+
+      const response = await cloudant.postAllDocs({
+        db: DB,
+        includeDocs: true,
+        keys: communityIds,
       });
 
       docs = (response.result.rows || [])
@@ -386,7 +409,11 @@ router.post(
         return res.status(500).json({ success: false, error: 'Failed to create community' });
       }
 
-      await createMembership(userId, community);
+      // Creator automatically becomes a member with 'owner' role
+      await createMembership(userId, username, email, community, 'owner');
+
+      // Set membership cache so next lookup is instant
+      membershipCache.set(`mem:${userId}:${community._id}`, true);
 
       const defaultChannel = {
         _id: uuidv4(),
@@ -717,26 +744,58 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
       return res.status(202).json({ success: true, pending: true, request: requestDoc });
     }
 
-    if (!Array.isArray(community.members)) community.members = [];
-    community.members.push(userId);
-    community.member_count = community.members.length;
-    community.updated_at = new Date().toISOString();
+    // Create membership record first (idempotent). This is the real source-of-truth for access.
+    await createMembership(userId, username, email, community, 'member');
 
-    const response = await cloudant.putDocument({ db: DB, docId: community._id, document: community });
-    if (!response.result.ok) {
-      return res.status(500).json({ success: false, error: 'Failed to join community' });
+    // Warm the membership cache so next access is instant.
+    membershipCache.set(`mem:${userId}:${community._id}`, true);
+
+    // Best-effort: update community doc member array/count.
+    // This can conflict under concurrent joins (Cloudant _rev), so retry a few times.
+    const isConflict = (err) => {
+      const status = err?.status || err?.statusCode;
+      if (status === 409) return true;
+      return String(err?.message || '').toLowerCase().includes('conflict');
+    };
+
+    let updatedCommunity = community;
+    let updatedOk = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (!Array.isArray(updatedCommunity.members)) updatedCommunity.members = [];
+      if (!updatedCommunity.members.includes(userId)) updatedCommunity.members.push(userId);
+      updatedCommunity.member_count = updatedCommunity.members.length;
+      updatedCommunity.updated_at = new Date().toISOString();
+
+      try {
+        const response = await cloudant.putDocument({ db: DB, docId: updatedCommunity._id, document: updatedCommunity });
+        if (response.result.ok) {
+          updatedOk = true;
+          break;
+        }
+      } catch (err) {
+        if (!isConflict(err) || attempt === 2) {
+          console.warn('[COMMUNITIES] Join community update failed (membership already created):', err.message);
+          break;
+        }
+        try {
+          updatedCommunity = (await cloudant.getDocument({ db: DB, docId: updatedCommunity._id })).result;
+        } catch (refetchErr) {
+          console.warn('[COMMUNITIES] Join refetch failed:', refetchErr.message);
+          break;
+        }
+      }
     }
 
-    await createMembership(userId, username, email, community);
-    
-    // Invalidate caches
     communityCache.delete(`comm:${community._id}`);
-    membershipCache.delete(`mem:${userId}:${community._id}`);
 
     const io = req.app.get('io');
-    if (io) io.emit('community_updated', sanitizeCommunity(community));
+    if (io && updatedOk) io.emit('community_updated', sanitizeCommunity(updatedCommunity));
 
-    return res.json({ success: true, community: sanitizeCommunity(community) });
+    const sanitized = sanitizeCommunity(updatedCommunity);
+    if (!Array.isArray(sanitized.members)) sanitized.members = [];
+    if (!sanitized.members.includes(userId)) sanitized.members.push(userId);
+
+    return res.json({ success: true, community: sanitized });
   } catch (err) {
     console.error('[COMMUNITIES] Join error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to join community' });
@@ -780,12 +839,56 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
 
     await removeMembership(userId, community._id);
 
-    // Invalidate caches
+    // Invalidate caches immediately
     communityCache.delete(`comm:${community._id}`);
-    membershipCache.delete(`mem:${userId}:${community._id}`);
+    membershipCache.set(`mem:${userId}:${community._id}`, false);
+
+    // Clean up Firebase realtime state for this user's channels in the community
+    try {
+      if (firebaseService.db) {
+        // Clear typing state for all channels in this community
+        const channelsRes = await cloudant.postView({
+          db: 'channels',
+          ddoc: 'channels',
+          view: 'by_community',
+          startkey: [community._id],
+          endkey: [community._id, {}],
+          limit: 100,
+        });
+        const channelIds = (channelsRes.result.rows || []).map(r => r.key[0] ? r.id : null).filter(Boolean);
+        const channelDocsRes = await cloudant.postView({
+          db: 'channels',
+          ddoc: 'channels',
+          view: 'by_community',
+          startkey: [community._id],
+          endkey: [community._id, {}],
+          includeDocs: true,
+          limit: 100,
+        });
+        const chDocs = (channelDocsRes.result.rows || []).map(r => r.doc).filter(Boolean);
+        for (const ch of chDocs) {
+          await firebaseService.db.ref(`typing/${ch._id}/${userId}`).remove().catch(() => {});
+          await firebaseService.db.ref(`unread/${userId}/${ch._id}`).remove().catch(() => {});
+        }
+        // Clear presence
+        await firebaseService.db.ref(`presence/${userId}`).remove().catch(() => {});
+        await firebaseService.db.ref(`communities/${community._id}/presence/${userId}`).remove().catch(() => {});
+        console.log(`[COMMUNITIES] Firebase leave cleanup done for user=${userId} community=${community._id}`);
+      }
+    } catch (fbErr) {
+      console.warn('[COMMUNITIES] Firebase leave cleanup error:', fbErr.message);
+    }
 
     const io = req.app.get('io');
-    if (io) io.emit('community_updated', sanitizeCommunity(community));
+    if (io) {
+      io.emit('community_updated', sanitizeCommunity(community));
+      // Notify the leaving user's socket to remove discussion access
+      const userSockets = req.app.get('userSockets');
+      const userSocketId = userSockets && userSockets.get(userId);
+      if (userSocketId) {
+        io.to(userSocketId).emit('membership_left', { community_id: community._id });
+      }
+    }
 
     return res.json({ success: true, community: sanitizeCommunity(community) });
   } catch (err) {

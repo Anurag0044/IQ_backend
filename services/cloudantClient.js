@@ -66,6 +66,11 @@ const DATABASES = [
   'tutorials',    // Stores tutorial documents with Cloudinary image URLs
   'tutorial_media',
   'upload_metadata',
+  // Phase 4: Realtime discussions
+  'channels',
+  'messages',
+  'message_reactions',
+  'unread_states',
 ];
 
 /**
@@ -223,6 +228,70 @@ async function createDesignDocs() {
           },
           by_context: {
             map: 'function(doc) { if (doc.context_type && doc.context_id) emit([doc.context_type, doc.context_id, doc.created_at], null); }',
+          },
+        },
+      },
+    },
+    // Channels: query by community + position
+    {
+      db: 'channels',
+      docId: '_design/channels',
+      doc: {
+        _id: '_design/channels',
+        views: {
+          by_community: {
+            map: 'function(doc) { if (doc.community_id) emit([doc.community_id, doc.position || 0, doc.created_at], null); }',
+          },
+        },
+      },
+    },
+    // Messages: query by channel + created_at (history)
+    {
+      db: 'messages',
+      docId: '_design/messages',
+      doc: {
+        _id: '_design/messages',
+        views: {
+          by_channel_created_at: {
+            map: 'function(doc) { if (doc.channel_id && doc.created_at) emit([doc.channel_id, doc.created_at], null); }',
+          },
+          pinned_by_channel: {
+            map: 'function(doc) { if (doc.channel_id && doc.pinned === true && doc.pinned_at) emit([doc.channel_id, doc.pinned_at], null); }',
+          },
+        },
+      },
+    },
+    // Message reactions: query by message
+    {
+      db: 'message_reactions',
+      docId: '_design/message_reactions',
+      doc: {
+        _id: '_design/message_reactions',
+        views: {
+          by_message: {
+            map: 'function(doc) { if (doc.message_id && doc.created_at) emit([doc.message_id, doc.emoji || null, doc.created_at], null); }',
+          },
+          by_message_user: {
+            map: 'function(doc) { if (doc.message_id && doc.user_id) emit([doc.message_id, doc.user_id, doc.emoji || null], null); }',
+          },
+        },
+      },
+    },
+    // Unread states: query by user/channel
+    {
+      db: 'unread_states',
+      docId: '_design/unread_states',
+      doc: {
+        _id: '_design/unread_states',
+        views: {
+          by_user: {
+            map: 'function(doc) { if (doc.user_id && doc.updated_at) emit([doc.user_id, doc.updated_at], null); }',
+          },
+          by_user_channel: {
+            map: 'function(doc) { if (doc.user_id && doc.channel_id) emit([doc.user_id, doc.channel_id], null); }',
+          },
+          by_channel: {
+            map: 'function(doc) { if (doc.channel_id) emit(doc.channel_id, null); }',
           },
         },
       },

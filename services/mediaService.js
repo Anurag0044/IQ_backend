@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const cloudant = require('./cloudantClient');
-const { uploadBuffer, uploadVideoBuffer, deleteMedia } = require('./cloudinaryService');
+const { uploadBuffer, uploadVideoBuffer, uploadRawBuffer, deleteMedia } = require('./cloudinaryService');
 
 async function recordUploadMetadata({
   ownerId,
@@ -87,6 +87,21 @@ async function uploadVideo({ buffer, folder, ownerId, contextType, contextId, mi
   return uploaded;
 }
 
+async function uploadRaw({ buffer, folder, ownerId, contextType, contextId, mimeType, sizeBytes, filename }) {
+  const uploaded = await uploadRawBuffer(buffer, folder, undefined, filename);
+  await recordUploadMetadata({
+    ownerId,
+    contextType,
+    contextId,
+    resourceType: 'raw',
+    url: uploaded.secure_url,
+    publicId: uploaded.public_id,
+    mimeType,
+    sizeBytes,
+  });
+  return uploaded;
+}
+
 async function deleteUploadedMedia(publicId, resourceType) {
   if (!publicId) return;
   await deleteMedia(publicId, resourceType || 'image');
@@ -95,6 +110,7 @@ async function deleteUploadedMedia(publicId, resourceType) {
 module.exports = {
   uploadImage,
   uploadVideo,
+  uploadRaw,
   deleteUploadedMedia,
   recordTutorialMedia,
   recordUploadMetadata,

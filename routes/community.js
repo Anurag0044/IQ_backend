@@ -17,6 +17,21 @@ const cloudant = require('../services/cloudantClient');
 const { uploadBuffer, deleteImage } = require('../services/cloudinaryService');
 const { resolveSenderInfo, createNotification } = require('../services/notificationService');
 const { ensureAuthenticated, extractUserInfo, checkAdminRole } = require('../middleware/auth');
+const { communityCache, membershipCache, adminCache } = require('../services/cacheService');
+const firebaseService = require('../services/firebaseService');
+
+async function getCachedAdminStatus(user) {
+  const { email } = extractUserInfo(user);
+  if (!email) return false;
+
+  const cacheKey = `admin:${email.toLowerCase()}`;
+  const cached = adminCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const isAdmin = await checkAdminRole(user);
+  adminCache.set(cacheKey, isAdmin);
+  return isAdmin;
+}
 
 const router = express.Router();
 const DB = 'communities';
@@ -59,10 +74,11 @@ function normalizeCoAdmins(value) {
   return null;
 }
 
-async function isCommunityModerator(userId, community, isAdmin) {
+async function isCommunityModerator(userId, email, community, isAdmin) {
   if (isAdmin) return true;
-  if (!community || !userId) return false;
-  if (community.owner_id === userId) return true;
+  if (!community || (!userId && !email)) return false;
+  if (userId && community.owner_id === userId) return true;
+  if (email && community.owner_email && community.owner_email.toLowerCase() === email.toLowerCase()) return true;
   if (Array.isArray(community.co_admin_ids) && community.co_admin_ids.includes(userId)) return true;
   return false;
 }
@@ -71,27 +87,33 @@ async function isCommunityMember(userId, community) {
   if (!userId || !community) return false;
   if (Array.isArray(community.members) && community.members.includes(userId)) return true;
   try {
-    const res = await cloudant.postFind({
+    const res = await cloudant.postView({
       db: MEMBERS_DB,
-      selector: { community_id: community._id, user_id: userId },
+      ddoc: 'community_memberships',
+      view: 'by_community',
+      key: [community._id, userId],
+      includeDocs: true,
       limit: 1,
     });
-    return res.result.docs.length > 0;
+    return (res.result.rows || []).length > 0;
   } catch (err) {
     console.warn('[COMMUNITIES] Membership lookup failed:', err.message);
     return false;
   }
 }
 
-async function createMembership(userId, community) {
+async function createMembership(userId, username, userEmail, community) {
   if (!userId || !community) return;
   try {
-    const existing = await cloudant.postFind({
+    const existing = await cloudant.postView({
       db: MEMBERS_DB,
-      selector: { community_id: community._id, user_id: userId },
+      ddoc: 'community_memberships',
+      view: 'by_community',
+      key: [community._id, userId],
+      includeDocs: true,
       limit: 1,
     });
-    if (existing.result.docs.length > 0) return;
+    if ((existing.result.rows || []).length > 0) return;
 
     await cloudant.postDocument({
       db: MEMBERS_DB,
@@ -99,6 +121,10 @@ async function createMembership(userId, community) {
         _id: uuidv4(),
         community_id: community._id,
         user_id: userId,
+        username: username || '',
+        user_email: userEmail || '',
+        status: 'active',
+        visibility_access: community.visibility || 'public',
         created_at: new Date().toISOString(),
       },
     });
@@ -109,13 +135,16 @@ async function createMembership(userId, community) {
 
 async function removeMembership(userId, communityId) {
   try {
-    const existing = await cloudant.postFind({
+    const existing = await cloudant.postView({
       db: MEMBERS_DB,
-      selector: { community_id: communityId, user_id: userId },
+      ddoc: 'community_memberships',
+      view: 'by_community',
+      key: [communityId, userId],
+      includeDocs: true,
       limit: 1,
     });
-    if (existing.result.docs.length === 0) return;
-    const doc = existing.result.docs[0];
+    if ((existing.result.rows || []).length === 0) return;
+    const doc = existing.result.rows[0].doc;
     await cloudant.deleteDocument({ db: MEMBERS_DB, docId: doc._id, rev: doc._rev });
   } catch (err) {
     console.warn('[COMMUNITIES] Remove membership failed:', err.message);
@@ -127,14 +156,27 @@ async function isFriendWithModerators(userId, community) {
   const moderators = [community.owner_id, ...(community.co_admin_ids || [])].filter(Boolean);
   if (moderators.length === 0) return false;
 
-  const pairs = moderators.flatMap((modId) => ([
-    { sender_id: userId, receiver_id: modId },
-    { sender_id: modId, receiver_id: userId },
-  ]));
-
-  const selector = { status: 'accepted', $or: pairs };
-  const res = await cloudant.postFind({ db: FRIENDS_DB, selector, limit: 1 });
-  return res.result.docs.length > 0;
+  try {
+    const res = await cloudant.postView({
+      db: FRIENDS_DB,
+      ddoc: 'friendships',
+      view: 'by_user',
+      key: userId,
+      includeDocs: true,
+    });
+    
+    for (const row of (res.result.rows || [])) {
+      const doc = row.doc;
+      if (doc && doc.status === 'accepted') {
+        const otherId = doc.user_1 === userId ? doc.user_2 : doc.user_1;
+        if (moderators.includes(otherId)) return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.warn('[COMMUNITIES] Friend lookup failed:', err.message);
+    return false;
+  }
 }
 
 async function notifyCommunityModerators(req, community, senderId, senderName, senderAvatar, message, type) {
@@ -202,7 +244,37 @@ router.get('/', async (req, res) => {
 
     docs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-    return res.json({ success: true, communities: docs.map(sanitizeCommunity) });
+    let userMemberships = [];
+    let currentUserId = null;
+    if (req.isAuthenticated && req.isAuthenticated()) {
+      const userInfo = extractUserInfo(req.user);
+      currentUserId = userInfo.userId;
+      try {
+        const mems = await cloudant.postView({
+          db: MEMBERS_DB,
+          ddoc: 'community_memberships',
+          view: 'by_user',
+          startkey: [currentUserId],
+          endkey: [currentUserId, {}],
+          includeDocs: true,
+          limit: 1000
+        });
+        userMemberships = (mems.result.rows || []).map(row => row.doc?.community_id).filter(Boolean);
+      } catch (err) {}
+    }
+
+    const sanitizedDocs = docs.map(doc => {
+      const sanitized = sanitizeCommunity(doc);
+      if (currentUserId && userMemberships.includes(doc._id)) {
+        if (!Array.isArray(sanitized.members)) sanitized.members = [];
+        if (!sanitized.members.includes(currentUserId)) {
+          sanitized.members.push(currentUserId);
+        }
+      }
+      return sanitized;
+    });
+
+    return res.json({ success: true, communities: sanitizedDocs });
   } catch (err) {
     console.error('[COMMUNITIES] Fetch error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to fetch communities' });
@@ -216,7 +288,29 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
-    return res.json({ success: true, community: sanitizeCommunity(community) });
+    const sanitized = sanitizeCommunity(community);
+
+    if (req.isAuthenticated && req.isAuthenticated()) {
+      const { userId } = extractUserInfo(req.user);
+      try {
+        const mems = await cloudant.postView({
+          db: MEMBERS_DB,
+          ddoc: 'community_memberships',
+          view: 'by_community',
+          key: [community._id, userId],
+          includeDocs: true,
+          limit: 1
+        });
+        if ((mems.result.rows || []).length > 0) {
+          if (!Array.isArray(sanitized.members)) sanitized.members = [];
+          if (!sanitized.members.includes(userId)) {
+            sanitized.members.push(userId);
+          }
+        }
+      } catch (err) {}
+    }
+
+    return res.json({ success: true, community: sanitized });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Community not found' });
     console.error('[COMMUNITIES] Get error:', err.message);
@@ -294,6 +388,22 @@ router.post(
 
       await createMembership(userId, community);
 
+      const defaultChannel = {
+        _id: uuidv4(),
+        community_id: community._id,
+        name: community.name.trim().replace(/\s+/g, '-').toLowerCase() || 'general',
+        topic: 'Welcome to the community discussion',
+        type: 'text',
+        visibility: 'members',
+        position: 0,
+        created_by: userId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await cloudant.postDocument({ db: 'channels', document: defaultChannel }).catch(err => {
+        console.warn('[COMMUNITIES] Failed to create default discussion channel:', err.message);
+      });
+
       const io = req.app.get('io');
       if (io) io.emit('community_created', sanitizeCommunity(community));
 
@@ -318,8 +428,8 @@ router.put(
   ]),
   async (req, res) => {
     try {
-      const { userId } = extractUserInfo(req.user);
-      const isAdmin = await checkAdminRole(req.user);
+      const { userId, email } = extractUserInfo(req.user);
+      const isAdmin = await getCachedAdminStatus(req.user);
 
       let community;
       try {
@@ -329,7 +439,7 @@ router.put(
         throw err;
       }
 
-      const canManage = await isCommunityModerator(userId, community, isAdmin);
+      const canManage = await isCommunityModerator(userId, email, community, isAdmin);
       if (!canManage) {
         return res.status(403).json({ success: false, error: 'Not authorized to update this community' });
       }
@@ -376,10 +486,13 @@ router.put(
 
       community.updated_at = new Date().toISOString();
 
-      const response = await cloudant.postDocument({ db: DB, document: community });
+      const response = await cloudant.putDocument({ db: DB, docId: community._id, document: community });
       if (!response.result.ok) {
         return res.status(500).json({ success: false, error: 'Failed to update community' });
       }
+
+      // Invalidate caches
+      communityCache.delete(`comm:${community._id}`);
 
       const io = req.app.get('io');
       if (io) io.emit('community_updated', sanitizeCommunity(community));
@@ -398,8 +511,8 @@ router.put(
 // ─────────────────────────────────────────────
 router.delete('/:id', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
-    const isAdmin = await checkAdminRole(req.user);
+    const { userId, email } = extractUserInfo(req.user);
+    const isAdmin = await getCachedAdminStatus(req.user);
 
     let community;
     try {
@@ -409,7 +522,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
       throw err;
     }
 
-    const canManage = await isCommunityModerator(userId, community, isAdmin);
+    const canManage = await isCommunityModerator(userId, email, community, isAdmin);
     if (!canManage) {
       return res.status(403).json({ success: false, error: 'Not authorized to delete this community' });
     }
@@ -417,10 +530,96 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
     if (community.logo_public_id) await deleteImage(community.logo_public_id);
     if (community.banner_public_id) await deleteImage(community.banner_public_id);
 
+    // Remove associated memberships
+    try {
+      const memberships = await cloudant.postView({
+        db: MEMBERS_DB,
+        ddoc: 'community_memberships',
+        view: 'by_community',
+        startkey: [community._id],
+        endkey: [community._id, {}],
+        includeDocs: true,
+        limit: 1000
+      });
+      for (const row of (memberships.result.rows || [])) {
+        await cloudant.deleteDocument({ db: MEMBERS_DB, docId: row.doc._id, rev: row.doc._rev });
+      }
+    } catch (e) {
+      console.error('[COMMUNITIES] Failed to cleanup memberships:', e.message);
+    }
+
+    // Remove associated channels and their messages
+    try {
+      const channels = await cloudant.postView({
+        db: 'channels',
+        ddoc: 'channels',
+        view: 'by_community',
+        startkey: [community._id],
+        endkey: [community._id, {}],
+        includeDocs: true,
+        limit: 100
+      });
+      
+      for (const row of (channels.result.rows || [])) {
+        const channelDoc = row.doc;
+        
+        // Delete messages for this channel
+        try {
+          const messages = await cloudant.postView({
+            db: 'messages',
+            ddoc: 'messages',
+            view: 'by_channel_created_at',
+            startkey: [channelDoc._id],
+            endkey: [channelDoc._id, {}],
+            includeDocs: true,
+            limit: 1000
+          });
+          for (const msgRow of (messages.result.rows || [])) {
+            await cloudant.deleteDocument({ db: 'messages', docId: msgRow.doc._id, rev: msgRow.doc._rev });
+          }
+        } catch (msgErr) {}
+
+        // Delete unread states for this channel
+        try {
+          const unreads = await cloudant.postView({
+            db: 'unread_states',
+            ddoc: 'unread_states',
+            view: 'by_channel',
+            key: channelDoc._id,
+            includeDocs: true,
+            limit: 1000
+          });
+          for (const unreadRow of (unreads.result.rows || [])) {
+            await cloudant.deleteDocument({ db: 'unread_states', docId: unreadRow.doc._id, rev: unreadRow.doc._rev });
+          }
+        } catch (unrErr) {}
+
+        // Delete the channel itself
+        await cloudant.deleteDocument({ db: 'channels', docId: channelDoc._id, rev: channelDoc._rev });
+
+        // Cleanup Firebase data for this channel
+        try {
+          await firebaseService.deleteChannel(channelDoc._id);
+          console.log(`[COMMUNITIES] Cleaned Firebase data for channel ${channelDoc._id}`);
+        } catch (firebaseErr) {
+          console.warn('[COMMUNITIES] Firebase cleanup failed for channel:', firebaseErr.message);
+        }
+      }
+    } catch (e) {
+      console.error('[COMMUNITIES] Failed to cleanup channels/messages:', e.message);
+    }
+
+    // Remove community
     await cloudant.deleteDocument({ db: DB, docId: community._id, rev: community._rev });
+    
+    // Invalidate caches
+    communityCache.delete(`comm:${community._id}`);
+    // memberships are cascade deleted so it's safer to invalidate by prefix if possible, but they'll naturally expire or be 404ed anyway.
+    // adminCache is unrelated.
+    
     const io = req.app.get('io');
     if (io) io.emit('community_deleted', { community_id: community._id });
-    return res.json({ success: true, message: 'Community deleted' });
+    return res.json({ success: true, message: 'Community deleted safely' });
   } catch (err) {
     console.error('[COMMUNITIES] Delete error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to delete community' });
@@ -433,7 +632,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
 // ─────────────────────────────────────────────
 router.post('/:id/join', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
+    const { userId, username, email } = extractUserInfo(req.user);
 
     let community;
     try {
@@ -444,7 +643,12 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
     }
 
     if (await isCommunityMember(userId, community)) {
-      return res.json({ success: true, community: sanitizeCommunity(community) });
+      const sanitized = sanitizeCommunity(community);
+      if (!Array.isArray(sanitized.members)) sanitized.members = [];
+      if (!sanitized.members.includes(userId)) {
+        sanitized.members.push(userId);
+      }
+      return res.json({ success: true, community: sanitized });
     }
 
     if (community.visibility === 'private') {
@@ -455,14 +659,25 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
     }
 
     if (community.visibility === 'restricted') {
-      const existing = await cloudant.postFind({
-        db: REQUESTS_DB,
-        selector: { community_id: community._id, requester_id: userId, status: 'pending' },
-        limit: 1,
-      });
+      try {
+        const existing = await cloudant.postView({
+          db: REQUESTS_DB,
+          ddoc: 'community_requests',
+          view: 'by_requester',
+          startkey: [userId],
+          endkey: [userId, {}],
+          includeDocs: true,
+        });
 
-      if (existing.result.docs.length > 0) {
-        return res.status(202).json({ success: true, pending: true, request: existing.result.docs[0] });
+        const pendingReq = (existing.result.rows || []).find(r => 
+          r.doc && r.doc.community_id === community._id && r.doc.status === 'pending'
+        );
+
+        if (pendingReq) {
+          return res.status(202).json({ success: true, pending: true, request: pendingReq.doc });
+        }
+      } catch (e) {
+        console.warn('[COMMUNITIES] Request lookup failed:', e.message);
       }
 
       const { username } = extractUserInfo(req.user);
@@ -507,12 +722,16 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
     community.member_count = community.members.length;
     community.updated_at = new Date().toISOString();
 
-    const response = await cloudant.postDocument({ db: DB, document: community });
+    const response = await cloudant.putDocument({ db: DB, docId: community._id, document: community });
     if (!response.result.ok) {
       return res.status(500).json({ success: false, error: 'Failed to join community' });
     }
 
-    await createMembership(userId, community);
+    await createMembership(userId, username, email, community);
+    
+    // Invalidate caches
+    communityCache.delete(`comm:${community._id}`);
+    membershipCache.delete(`mem:${userId}:${community._id}`);
 
     const io = req.app.get('io');
     if (io) io.emit('community_updated', sanitizeCommunity(community));
@@ -554,12 +773,16 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
     community.member_count = community.members.length;
     community.updated_at = new Date().toISOString();
 
-    const response = await cloudant.postDocument({ db: DB, document: community });
+    const response = await cloudant.putDocument({ db: DB, docId: community._id, document: community });
     if (!response.result.ok) {
       return res.status(500).json({ success: false, error: 'Failed to leave community' });
     }
 
     await removeMembership(userId, community._id);
+
+    // Invalidate caches
+    communityCache.delete(`comm:${community._id}`);
+    membershipCache.delete(`mem:${userId}:${community._id}`);
 
     const io = req.app.get('io');
     if (io) io.emit('community_updated', sanitizeCommunity(community));
@@ -588,14 +811,21 @@ router.post('/:id/request', ensureAuthenticated, async (req, res) => {
       return res.json({ success: true, community: sanitizeCommunity(community) });
     }
 
-    const existing = await cloudant.postFind({
+    const existing = await cloudant.postView({
       db: REQUESTS_DB,
-      selector: { community_id: community._id, requester_id: userId, status: 'pending' },
-      limit: 1,
+      ddoc: 'community_requests',
+      view: 'by_requester',
+      startkey: [userId],
+      endkey: [userId, {}],
+      includeDocs: true,
     });
 
-    if (existing.result.docs.length > 0) {
-      return res.status(202).json({ success: true, pending: true, request: existing.result.docs[0] });
+    const pendingReq = (existing.result.rows || []).find(r => 
+      r.doc && r.doc.community_id === community._id && r.doc.status === 'pending'
+    );
+
+    if (pendingReq) {
+      return res.status(202).json({ success: true, pending: true, request: pendingReq.doc });
     }
 
     const requestDoc = {
@@ -646,7 +876,7 @@ router.post('/:id/request', ensureAuthenticated, async (req, res) => {
 router.get('/:id/requests', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
-    const isAdmin = await checkAdminRole(req.user);
+    const isAdmin = await getCachedAdminStatus(req.user);
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
 
     const canManage = await isCommunityModerator(userId, community, isAdmin);
@@ -681,7 +911,7 @@ router.get('/:id/requests', ensureAuthenticated, async (req, res) => {
 router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
-    const isAdmin = await checkAdminRole(req.user);
+    const isAdmin = await getCachedAdminStatus(req.user);
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
 
     const canManage = await isCommunityModerator(userId, community, isAdmin);
@@ -752,7 +982,7 @@ router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req,
 router.post('/:id/requests/:requestId/reject', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
-    const isAdmin = await checkAdminRole(req.user);
+    const isAdmin = await getCachedAdminStatus(req.user);
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
 
     const canManage = await isCommunityModerator(userId, community, isAdmin);

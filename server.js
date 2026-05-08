@@ -31,6 +31,8 @@ const commentsRoutes = require('./routes/comments');
 const friendsRoutes = require('./routes/friends');
 const tutorialsRoutes = require('./routes/tutorials');
 const orionRoutes = require('./routes/orion');
+const discussionsRoutes = require('./routes/discussions');
+const { attachDiscussionSocketHandlers } = require('./sockets/discussions');
 
 const app = express();
 const http = require('http');
@@ -61,11 +63,35 @@ const userSockets = new Map();
 app.set('io', io);
 app.set('userSockets', userSockets);
 
+const { startStatsBroadcaster } = require('./services/statsService');
+startStatsBroadcaster(io);
+
 io.on('connection', (socket) => {
   console.log(`[SOCKET] Client connected: ${socket.id}`);
 
-  socket.on('register', (userId) => {
+  socket.on('register', (payload) => {
+    const userId = typeof payload === 'string' ? payload : payload?.userId;
+    if (!userId) return;
+
+    // Optional identity details (used by discussion sockets for names/admin checks)
+    if (payload && typeof payload === 'object') {
+      if (payload.email) socket.data.email = String(payload.email).toLowerCase();
+      if (payload.username) socket.data.username = String(payload.username);
+    }
+
+    const existingSocketId = userSockets.get(userId);
+    if (existingSocketId && existingSocketId !== socket.id) {
+      // Duplicate socket prevention: keep the latest connection only
+      try {
+        const existingSocket = io.sockets.sockets.get(existingSocketId);
+        if (existingSocket) {
+          existingSocket.emit('duplicate_session', { reason: 'Another tab/session connected.' });
+          existingSocket.disconnect(true);
+        }
+      } catch (e) { /* ignore */ }
+    }
     userSockets.set(userId, socket.id);
+    socket.data.userId = userId;
     console.log(`[SOCKET] User mapped: ${userId} -> ${socket.id}`);
   });
 
@@ -86,6 +112,9 @@ io.on('connection', (socket) => {
       }
     }
   });
+
+  // Phase 4: discussion sockets (channels/messages/presence)
+  attachDiscussionSocketHandlers({ io, socket, cloudant: require('./services/cloudantClient') });
 });
 
 // ─────────────────────────────────────────────
@@ -505,6 +534,7 @@ app.use('/api/friends', friendsRoutes);
 app.use('/api/voice', voiceRoutes);
 app.use('/api/tutorials', tutorialsRoutes);
 app.use('/api/orion', orionRoutes);
+app.use('/api/discussions', discussionsRoutes);
 
 // ─────────────────────────────────────────────
 // 404 + Error Handlers

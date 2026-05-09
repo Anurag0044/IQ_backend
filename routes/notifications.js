@@ -6,9 +6,17 @@
 const express = require('express');
 const cloudant = require('../services/cloudantClient');
 const { ensureAuthenticated, extractUserInfo } = require('../middleware/auth');
+const { TTLCache } = require('../services/cacheService');
 
 const router = express.Router();
 const DB = 'notifications';
+const notificationsCache = new TTLCache(10_000, 200);
+
+function isCloudantRateLimit(err) {
+  const status = err?.status || err?.statusCode;
+  const message = String(err?.message || '').toLowerCase();
+  return status === 429 || message.includes('too_many_requests') || message.includes('rate limit');
+}
 
 // ─────────────────────────────────────────────
 // GET /api/notifications
@@ -17,20 +25,37 @@ const DB = 'notifications';
 router.get('/', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit || 25)));
+    const cacheKey = `notifications:${userId}:${limit}`;
+    const cached = notificationsCache.get(cacheKey);
+    if (cached) {
+      console.log('[API] duplicate request prevented /api/notifications');
+      return res.json(cached);
+    }
 
-    const response = await cloudant.postAllDocs({
+    const response = await cloudant.postView({
       db: DB,
+      ddoc: 'notifications',
+      view: 'by_user',
+      startKey: [userId, {}],
+      endKey: [userId],
+      descending: true,
       includeDocs: true,
+      limit,
     });
 
-    const notifications = response.result.rows
+    const notifications = (response.result.rows || [])
       .map((r) => r.doc)
-      .filter((doc) => doc && !doc._id.startsWith('_design') && doc.user_id === userId)
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      .filter((doc) => doc && !doc._id.startsWith('_design') && doc.user_id === userId);
 
-    res.json({ success: true, notifications });
+    const payload = { success: true, notifications };
+    notificationsCache.set(cacheKey, payload);
+    res.json(payload);
   } catch (err) {
     console.error('[NOTIFICATIONS] Fetch error:', err.message);
+    if (isCloudantRateLimit(err)) {
+      return res.status(429).json({ success: false, error: 'Cloudant rate limit reached. Please retry shortly.' });
+    }
     res.status(500).json({ success: false, error: 'Failed to fetch notifications' });
   }
 });
@@ -74,6 +99,7 @@ router.patch('/:id/read', ensureAuthenticated, async (req, res) => {
     });
 
     if (updateResponse.result.ok) {
+      notificationsCache.invalidatePrefix(`notifications:${userId}:`);
       return res.json({ success: true, notification: updated });
     }
 

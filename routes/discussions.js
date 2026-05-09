@@ -26,8 +26,6 @@ const DB_MEMBERSHIPS = 'community_memberships';
 
 const DB_CHANNELS = 'channels';
 const DB_MESSAGES = 'messages';
-const DB_REACTIONS = 'message_reactions';
-const DB_UNREAD = 'unread_states';
 
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -342,25 +340,6 @@ router.delete('/communities/:communityId/channels/:channelId', ensureAuthenticat
       console.warn('[DISCUSSIONS] Failed to delete channel messages:', msgErr.message);
     }
 
-    // Delete unread states for this channel
-    try {
-      const unreads = await cloudant.postView({
-        db: DB_UNREAD,
-        ddoc: 'unread_states',
-        view: 'by_channel',
-        key: channel._id,
-        includeDocs: true,
-        limit: 1000,
-      });
-      for (const row of (unreads.result.rows || [])) {
-        if (row.doc) {
-          await cloudant.deleteDocument({ db: DB_UNREAD, docId: row.doc._id, rev: row.doc._rev }).catch(() => {});
-        }
-      }
-    } catch (unrErr) {
-      console.warn('[DISCUSSIONS] Failed to delete channel unreads:', unrErr.message);
-    }
-
     // Delete from Cloudant
     await cloudant.deleteDocument({ db: DB_CHANNELS, docId: channel._id, rev: channel._rev });
 
@@ -434,7 +413,7 @@ router.post('/channels/:channelId/messages', ensureAuthenticated, async (req, re
       return res.status(400).json({ success: false, error: 'Message content is required' });
     }
 
-    const { userId, username } = extractUserInfo(req.user);
+    const { userId } = extractUserInfo(req.user);
     const isAdmin = await getCachedAdminStatus(req.user);
     const channel = await getChannelOr404(req.params.channelId);
     if (!channel) return res.status(404).json({ success: false, error: 'Channel not found' });
@@ -681,43 +660,7 @@ router.post('/messages/:messageId/reactions', ensureAuthenticated, async (req, r
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
 
-    // Check existing reaction via indexed view
-    let existing = null;
-    try {
-      const keyRes = await cloudant.postView({
-        db: DB_REACTIONS,
-        ddoc: 'message_reactions',
-        view: 'by_message_user',
-        key: [message._id, userId, emoji],
-        includeDocs: true,
-        limit: 1,
-      });
-      existing = keyRes.result.rows?.[0]?.doc || null;
-    } catch (_err) {}
-
     const doRemove = action === 'remove';
-    if (doRemove) {
-      if (existing) {
-        await cloudant.deleteDocument({ db: DB_REACTIONS, docId: existing._id, rev: existing._rev });
-      }
-    } else {
-      if (!existing) {
-        await cloudant.postDocument({
-          db: DB_REACTIONS,
-          document: {
-            _id: uuidv4(),
-            message_id: message._id,
-            channel_id: message.channel_id,
-            community_id: message.community_id,
-            user_id: userId,
-            username,
-            emoji,
-            created_at: nowIso(),
-          },
-        });
-      }
-    }
-
     const io = req.app.get('io');
     if (io) {
       io.to(`channel:${message.channel_id}`).emit('message_reaction', {
@@ -730,7 +673,7 @@ router.post('/messages/:messageId/reactions', ensureAuthenticated, async (req, r
       });
     }
 
-    return res.json({ success: true });
+    return res.json({ success: true, persisted: false });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Message not found' });
     console.error('[DISCUSSIONS] Reactions error:', err.message);
@@ -755,41 +698,6 @@ router.post('/channels/:channelId/read', ensureAuthenticated, async (req, res) =
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
 
-    // Find existing unread doc via indexed view
-    let existing = null;
-    try {
-      const existingRes = await cloudant.postView({
-        db: DB_UNREAD,
-        ddoc: 'unread_states',
-        view: 'by_user_channel',
-        key: [userId, channel._id],
-        includeDocs: true,
-        limit: 1,
-      });
-      existing = existingRes.result.rows?.[0]?.doc || null;
-    } catch (_err) {}
-
-    const doc = existing || {
-      _id: uuidv4(),
-      user_id: userId,
-      community_id: channel.community_id,
-      channel_id: channel._id,
-      unread_count: 0,
-      last_read_at: null,
-      updated_at: nowIso(),
-      created_at: nowIso(),
-    };
-
-    doc.unread_count = 0;
-    doc.last_read_at = nowIso();
-    doc.updated_at = nowIso();
-
-    if (existing) {
-      await cloudant.putDocument({ db: DB_UNREAD, docId: doc._id, document: doc });
-    } else {
-      await cloudant.postDocument({ db: DB_UNREAD, document: doc });
-    }
-
     const io = req.app.get('io');
     if (io) io.to(`channel:${channel._id}`).emit('unread_count_updates', { channel_id: channel._id, user_id: userId, unread_count: 0 });
 
@@ -803,28 +711,7 @@ router.post('/channels/:channelId/read', ensureAuthenticated, async (req, res) =
 // GET /api/discussions/communities/:communityId/unreads Ã¢â‚¬â€ get unread counts
 router.get('/communities/:communityId/unreads', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
-
-    // Use indexed view instead of postFind
-    const viewRes = await cloudant.postView({
-      db: DB_UNREAD,
-      ddoc: 'unread_states',
-      view: 'by_user',
-      startKey: [userId],
-      endKey: [userId, {}],
-      includeDocs: true,
-      limit: 500,
-    });
-
-    const unreads = (viewRes.result.rows || [])
-      .map(row => row.doc)
-      .filter(doc => doc && doc.community_id === req.params.communityId)
-      .map(doc => ({
-        channel_id: doc.channel_id,
-        unread_count: doc.unread_count || 0,
-      }));
-
-    return res.json({ success: true, unreads });
+    return res.json({ success: true, unreads: [] });
   } catch (err) {
     console.error('[DISCUSSIONS] Fetch unreads error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to fetch unread counts' });

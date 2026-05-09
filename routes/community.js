@@ -17,7 +17,7 @@ const cloudant = require('../services/cloudantClient');
 const { uploadBuffer, deleteImage } = require('../services/cloudinaryService');
 const { resolveSenderInfo, createNotification } = require('../services/notificationService');
 const { ensureAuthenticated, extractUserInfo, checkAdminRole } = require('../middleware/auth');
-const { communityCache, membershipCache, adminCache } = require('../services/cacheService');
+const { communityCache, membershipCache, adminCache, TTLCache } = require('../services/cacheService');
 const firebaseService = require('../services/firebaseService');
 
 async function getCachedAdminStatus(user) {
@@ -38,6 +38,7 @@ const DB = 'communities';
 const REQUESTS_DB = 'community_requests';
 const MEMBERS_DB = 'community_memberships';
 const FRIENDS_DB = 'friendships';
+const communityListCache = new TTLCache(15_000, 50);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -165,18 +166,18 @@ async function isFriendWithModerators(userId, community) {
   if (moderators.length === 0) return false;
 
   try {
-    const res = await cloudant.postView({
+    const res = await cloudant.postFind({
       db: FRIENDS_DB,
-      ddoc: 'friendships',
-      view: 'by_user',
-      key: userId,
-      includeDocs: true,
+      selector: {
+        status: 'accepted',
+        $or: [{ sender_id: userId }, { receiver_id: userId }],
+      },
+      limit: 100,
     });
     
-    for (const row of (res.result.rows || [])) {
-      const doc = row.doc;
+    for (const doc of (res.result.docs || [])) {
       if (doc && doc.status === 'accepted') {
-        const otherId = doc.user_1 === userId ? doc.user_2 : doc.user_1;
+        const otherId = doc.sender_id === userId ? doc.receiver_id : doc.sender_id;
         if (moderators.includes(otherId)) return true;
       }
     }
@@ -185,6 +186,16 @@ async function isFriendWithModerators(userId, community) {
     console.warn('[COMMUNITIES] Friend lookup failed:', err.message);
     return false;
   }
+}
+
+function clearCommunityListCache() {
+  communityListCache.clear();
+}
+
+function isCloudantRateLimit(err) {
+  const status = err?.status || err?.statusCode;
+  const message = String(err?.message || '').toLowerCase();
+  return status === 429 || message.includes('too_many_requests') || message.includes('rate limit');
 }
 
 async function notifyCommunityModerators(req, community, senderId, senderName, senderAvatar, message, type) {
@@ -256,10 +267,34 @@ router.get('/', async (req, res) => {
         .map((row) => row.doc)
         .filter((doc) => doc && !doc._id.startsWith('_design'));
     } else {
-      const response = await cloudant.postAllDocs({
-        db: DB,
-        includeDocs: true,
-      });
+      const limit = Math.max(1, Math.min(50, Number(req.query.limit || 25)));
+      const before = req.query.before ? String(req.query.before) : null;
+      const cacheKey = `communities:${limit}:${before || 'latest'}`;
+      const cached = communityListCache.get(cacheKey);
+      if (cached) {
+        console.log('[API] duplicate request prevented /api/communities');
+        return res.json(cached);
+      }
+
+      let response;
+      try {
+        response = await cloudant.postView({
+          db: DB,
+          ddoc: 'community_lists',
+          view: 'by_created_at',
+          startKey: before || {},
+          descending: true,
+          includeDocs: true,
+          limit,
+        });
+      } catch (viewErr) {
+        console.warn('[COMMUNITIES] Indexed list lookup failed, using bounded fallback:', viewErr.message);
+        response = await cloudant.postAllDocs({
+          db: DB,
+          includeDocs: true,
+          limit,
+        });
+      }
 
       docs = (response.result.rows || [])
         .map((row) => row.doc)
@@ -305,9 +340,18 @@ router.get('/', async (req, res) => {
       });
     }
 
-    return res.json({ success: true, communities: sanitizedDocs });
+    const payload = { success: true, communities: sanitizedDocs };
+    if (!mine) {
+      const limit = Math.max(1, Math.min(50, Number(req.query.limit || 25)));
+      const before = req.query.before ? String(req.query.before) : null;
+      communityListCache.set(`communities:${limit}:${before || 'latest'}`, payload);
+    }
+    return res.json(payload);
   } catch (err) {
     console.error('[COMMUNITIES] Fetch error:', err.message);
+    if (isCloudantRateLimit(err)) {
+      return res.status(429).json({ success: false, error: 'Cloudant rate limit reached. Please retry shortly.' });
+    }
     return res.status(500).json({ success: false, error: 'Failed to fetch communities' });
   }
 });
@@ -447,6 +491,7 @@ router.post(
 
       const io = req.app.get('io');
       if (io) io.emit('community_created', sanitizeCommunity(community));
+      clearCommunityListCache();
 
       return res.status(201).json({ success: true, community: sanitizeCommunity(community) });
     } catch (err) {
@@ -534,6 +579,7 @@ router.put(
 
       // Invalidate caches
       communityCache.delete(`comm:${community._id}`);
+      clearCommunityListCache();
 
       const io = req.app.get('io');
       if (io) io.emit('community_updated', sanitizeCommunity(community));
@@ -620,21 +666,6 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
           }
         } catch (msgErr) {}
 
-        // Delete unread states for this channel
-        try {
-          const unreads = await cloudant.postView({
-            db: 'unread_states',
-            ddoc: 'unread_states',
-            view: 'by_channel',
-            key: channelDoc._id,
-            includeDocs: true,
-            limit: 1000
-          });
-          for (const unreadRow of (unreads.result.rows || [])) {
-            await cloudant.deleteDocument({ db: 'unread_states', docId: unreadRow.doc._id, rev: unreadRow.doc._rev });
-          }
-        } catch (unrErr) {}
-
         // Delete the channel itself
         await cloudant.deleteDocument({ db: 'channels', docId: channelDoc._id, rev: channelDoc._rev });
 
@@ -655,6 +686,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
     
     // Invalidate caches
     communityCache.delete(`comm:${community._id}`);
+    clearCommunityListCache();
     // memberships are cascade deleted so it's safer to invalidate by prefix if possible, but they'll naturally expire or be 404ed anyway.
     // adminCache is unrelated.
     
@@ -802,6 +834,7 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
     }
 
     communityCache.delete(`comm:${community._id}`);
+    clearCommunityListCache();
 
     const io = req.app.get('io');
     if (io && updatedOk) io.emit('community_updated', sanitizeCommunity(updatedCommunity));
@@ -856,6 +889,7 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
 
     // Invalidate caches immediately
     communityCache.delete(`comm:${community._id}`);
+    clearCommunityListCache();
     membershipCache.set(`mem:${userId}:${community._id}`, false);
 
     // Clean up Firebase realtime state for this user's channels in the community
@@ -1067,6 +1101,7 @@ router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req,
     );
     membershipCache.set(`mem:${requestDoc.requester_id}:${community._id}`, true);
     communityCache.delete(`comm:${community._id}`);
+    clearCommunityListCache();
 
     const { senderName, senderAvatar } = await resolveSenderInfo(
       cloudant,

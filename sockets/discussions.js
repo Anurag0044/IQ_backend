@@ -1,11 +1,10 @@
 // ============================================
 // CloudIQ Backend - Discussion Socket Handlers
 // ============================================
-// Handles channel join/leave, messaging, typing, reactions, presence, unread updates.
+// Handles channel join/leave, messaging, typing, reactions, presence.
 // Designed to plug into the existing io.on('connection') without rewrites.
 //
 // OPTIMIZED for Cloudant Lite plan:
-//   - In-memory unread counters (batch-flushed every 30s instead of per-message writes)
 //   - Cached community/membership lookups via cacheService
 //   - postView instead of postFind for indexed queries
 //   - Admin role cached on socket.data
@@ -19,8 +18,6 @@ const DB_COMMUNITIES = 'communities';
 const DB_MEMBERSHIPS = 'community_memberships';
 const DB_CHANNELS = 'channels';
 const DB_MESSAGES = 'messages';
-const DB_REACTIONS = 'message_reactions';
-const DB_UNREAD = 'unread_states';
 
 function nowIso() {
   return new Date().toISOString();
@@ -192,15 +189,7 @@ async function flushUnreadsToCloudant(cloudant) {
         // Find existing unread doc
         let existing = null;
         try {
-          const res = await cloudant.postView({
-            db: DB_UNREAD,
-            ddoc: 'unread_states',
-            view: 'by_user_channel',
-            key: [entry.userId, entry.channelId],
-            includeDocs: true,
-            limit: 1,
-          });
-          existing = res.result.rows?.[0]?.doc || null;
+          existing = null;
         } catch (_err) {}
 
         const ts = nowIso();
@@ -219,9 +208,9 @@ async function flushUnreadsToCloudant(cloudant) {
         doc.updated_at = ts;
 
         if (existing) {
-          await cloudant.putDocument({ db: DB_UNREAD, docId: doc._id, document: doc });
+          // Retired persistence path: keep in-memory compatibility only.
         } else {
-          await cloudant.postDocument({ db: DB_UNREAD, document: doc });
+          // Retired persistence path: keep in-memory compatibility only.
         }
 
         // Reset the count after successful flush
@@ -249,9 +238,6 @@ function startUnreadFlusher(cloudant, intervalMs = 30000) {
 
 // ─── Socket Handler ──────────────────────────────────────────────────────────
 function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
-
-  // Start the unread flusher on first attachment (idempotent)
-  if (!unreadFlushTimer) startUnreadFlusher(cloudant);
 
   socket.on('join_community_discussions', async (payload = {}) => {
     try {
@@ -415,8 +401,6 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
 
       io.to(`channel:${channel._id}`).emit('new_message', { ...messageDoc, client_temp_id: client_temp_id || null });
 
-      // In-memory unread bump (flushed to Cloudant every 30s, not per-message)
-      bumpUnreadInMemory({ community, channelId: channel._id, senderId: userId });
       io.to(`community:${channel.community_id}`).emit('unread_count_updates', { channel_id: channel._id, at: nowIso() });
     } catch (err) {
       console.warn('[SOCKET][DISCUSSIONS] new_message failed:', err.message);
@@ -444,39 +428,6 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
       if (!canAccessChannel({ channel, userId, isAdmin, isMod })) return;
 
       const doRemove = action === 'remove';
-
-      // Check existing reaction via view
-      let existing = null;
-      try {
-        const res = await cloudant.postView({
-          db: DB_REACTIONS,
-          ddoc: 'message_reactions',
-          view: 'by_message_user',
-          key: [message_id, userId, emoji],
-          includeDocs: true,
-          limit: 1,
-        });
-        existing = res.result.rows?.[0]?.doc || null;
-      } catch (_err) {}
-
-      if (doRemove) {
-        if (existing) await cloudant.deleteDocument({ db: DB_REACTIONS, docId: existing._id, rev: existing._rev });
-      } else {
-        if (!existing) {
-          await cloudant.postDocument({
-            db: DB_REACTIONS,
-            document: {
-              _id: uuidv4(),
-              message_id,
-              channel_id: message.channel_id,
-              community_id: message.community_id,
-              user_id: userId,
-              emoji,
-              created_at: nowIso(),
-            },
-          });
-        }
-      }
 
       io.to(`channel:${message.channel_id}`).emit('message_reaction', {
         message_id,

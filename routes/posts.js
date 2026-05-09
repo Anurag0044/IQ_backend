@@ -14,9 +14,17 @@ const cloudant = require('../services/cloudantClient');
 const { uploadImage, uploadVideo, deleteUploadedMedia } = require('../services/mediaService');
 const { resolveSenderInfo, createNotification } = require('../services/notificationService');
 const { ensureAuthenticated, checkAdminRole, extractUserInfo } = require('../middleware/auth');
+const { TTLCache } = require('../services/cacheService');
 
 const router = express.Router();
 const DB = 'posts';
+const postsCache = new TTLCache(15_000, 20);
+
+function isCloudantRateLimit(err) {
+  const status = err?.status || err?.statusCode;
+  const message = String(err?.message || '').toLowerCase();
+  return status === 429 || message.includes('too_many_requests') || message.includes('rate limit');
+}
 
 // ─────────────────────────────────────────────
 // Multer — post images/videos (image 5 MB, video 50 MB)
@@ -65,20 +73,41 @@ async function isCommunityModerator(userId, communityId) {
 // ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const response = await cloudant.postAllDocs({
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit || 25)));
+    const before = req.query.before ? String(req.query.before) : null;
+    const cacheKey = `posts:${limit}:${before || 'latest'}`;
+    const cached = postsCache.get(cacheKey);
+    if (cached) {
+      console.log('[API] duplicate request prevented /api/posts');
+      return res.json(cached);
+    }
+
+    const response = await cloudant.postView({
       db: DB,
+      ddoc: 'posts',
+      view: 'by_created_at',
+      startKey: before || {},
+      descending: true,
       includeDocs: true,
+      limit,
     });
 
-    // Filter out design docs, then sort newest first
-    const posts = response.result.rows
+    const posts = (response.result.rows || [])
       .map((r) => r.doc)
-      .filter((doc) => doc && !doc._id.startsWith('_design'))
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      .filter((doc) => doc && !doc._id.startsWith('_design'));
 
-    res.json({ success: true, posts });
+    const payload = {
+      success: true,
+      posts,
+      nextBefore: posts.length ? posts[posts.length - 1].created_at : null,
+    };
+    postsCache.set(cacheKey, payload);
+    return res.json(payload);
   } catch (err) {
     console.error('[POSTS] Fetch error:', err.message);
+    if (isCloudantRateLimit(err)) {
+      return res.status(429).json({ success: false, error: 'Cloudant rate limit reached. Please retry shortly.' });
+    }
     res.status(500).json({ success: false, error: 'Failed to fetch posts' });
   }
 });
@@ -201,6 +230,7 @@ router.post('/create', ensureAuthenticated, upload.fields([
 
     const response = await cloudant.postDocument({ db: DB, document: newPost });
     if (response.result.ok) {
+      postsCache.clear();
       res.json({ success: true, post: newPost });
     } else {
       res.status(500).json({ success: false, error: 'Cloudant insert failed' });
@@ -259,6 +289,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
     });
 
     if (deleteResponse.result.ok) {
+      postsCache.clear();
       res.json({ success: true, message: 'Post deleted' });
     } else {
       res.status(500).json({ success: false, error: 'Failed to delete post' });
@@ -313,6 +344,7 @@ router.post('/:id/like', ensureAuthenticated, async (req, res) => {
     });
 
     if (updateResponse.result.ok) {
+      postsCache.clear();
       // Create notification for post owner (only on like, not unlike, and not self-like)
       const recipientId = post.user_id;
       const isSelfLike = recipientId === fromUserId || (post.email && post.email === email);

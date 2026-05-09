@@ -2,9 +2,24 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const cloudant = require('../services/cloudantClient');
 const { ensureAuthenticated, extractUserInfo } = require('../middleware/auth');
+const { TTLCache } = require('../services/cacheService');
 
 const router = express.Router();
 const DB = 'friendships';
+const friendsCache = new TTLCache(10_000, 200);
+
+function clearFriendCaches(...userIds) {
+  for (const userId of userIds.filter(Boolean)) {
+    friendsCache.invalidatePrefix(`friends:${userId}:`);
+    friendsCache.invalidatePrefix(`discover:${userId}:`);
+  }
+}
+
+function isCloudantRateLimit(err) {
+  const status = err?.status || err?.statusCode;
+  const message = String(err?.message || '').toLowerCase();
+  return status === 429 || message.includes('too_many_requests') || message.includes('rate limit');
+}
 
 // ─────────────────────────────────────────────
 // GET /api/friends/discover
@@ -14,19 +29,44 @@ const DB = 'friendships';
 router.get('/discover', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+    const cacheKey = `discover:${userId}:${limit}`;
+    const cached = friendsCache.get(cacheKey);
+    if (cached) {
+      console.log('[API] duplicate request prevented /api/friends/discover');
+      return res.json(cached);
+    }
 
-    // Fetch all users from users DB
-    const usersRes = await cloudant.postAllDocs({ db: 'users', includeDocs: true });
-    const allUsers = usersRes.result.rows
+    let usersRows = [];
+    try {
+      const usersRes = await cloudant.postView({
+        db: 'users',
+        ddoc: 'users',
+        view: 'by_onboarded',
+        startKey: [true],
+        endKey: [true, {}],
+        includeDocs: true,
+        limit,
+      });
+      usersRows = usersRes.result.rows || [];
+    } catch (viewErr) {
+      console.warn('[FRIENDS] Indexed user discovery failed, using bounded fallback:', viewErr.message);
+      const usersRes = await cloudant.postAllDocs({ db: 'users', includeDocs: true, limit });
+      usersRows = usersRes.result.rows || [];
+    }
+
+    const allUsers = usersRows
       .map(r => r.doc)
-      .filter(doc => doc && !doc._id.startsWith('_design') && doc._id !== userId && doc.is_onboarded);
+      .filter(doc => doc && !doc._id.startsWith('_design') && doc._id !== userId && doc.is_onboarded)
+      .slice(0, limit);
 
     // Fetch all friendships involving current user
     const fsRes = await cloudant.postFind({
       db: DB,
       selector: {
         $or: [{ sender_id: userId }, { receiver_id: userId }]
-      }
+      },
+      limit: 500
     });
     const friendships = fsRes.result.docs;
 
@@ -57,9 +97,14 @@ router.get('/discover', ensureAuthenticated, async (req, res) => {
       };
     });
 
-    return res.json({ success: true, users });
+    const payload = { success: true, users };
+    friendsCache.set(cacheKey, payload);
+    return res.json(payload);
   } catch (err) {
     console.error('[FRIENDS] Discover error:', err.message);
+    if (isCloudantRateLimit(err)) {
+      return res.status(429).json({ success: false, error: 'Cloudant rate limit reached. Please retry shortly.' });
+    }
     return res.status(500).json({ success: false, error: 'Failed to fetch users' });
   }
 });
@@ -114,6 +159,7 @@ router.post('/request', ensureAuthenticated, async (req, res) => {
     const response = await cloudant.postDocument({ db: DB, document: friendship });
 
     if (response.result.ok) {
+      clearFriendCaches(sender_id, receiver_id);
       // Real-time notification
       const io = req.app.get('io');
       const userSockets = req.app.get('userSockets');
@@ -175,6 +221,7 @@ router.post('/accept', ensureAuthenticated, async (req, res) => {
     const updateResponse = await cloudant.postDocument({ db: DB, document: friendship });
 
     if (updateResponse.result.ok) {
+      clearFriendCaches(friendship.sender_id, friendship.receiver_id);
       const io = req.app.get('io');
       const userSockets = req.app.get('userSockets');
       if (io && userSockets) {
@@ -224,6 +271,7 @@ router.post('/reject', ensureAuthenticated, async (req, res) => {
     }
 
     await cloudant.deleteDocument({ db: DB, docId: friendship._id, rev: friendship._rev });
+    clearFriendCaches(friendship.sender_id, friendship.receiver_id);
     return res.json({ success: true, message: 'Request rejected/withdrawn' });
   } catch (err) {
     console.error('[FRIENDS] Reject error:', err.message);
@@ -253,6 +301,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
     }
 
     await cloudant.deleteDocument({ db: DB, docId: friendship._id, rev: friendship._rev });
+    clearFriendCaches(friendship.sender_id, friendship.receiver_id);
     return res.json({ success: true, message: 'Connection removed' });
   } catch (err) {
     console.error('[FRIENDS] Remove error:', err.message);
@@ -267,10 +316,17 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
 router.get('/', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
+    const cacheKey = `friends:${userId}:list`;
+    const cached = friendsCache.get(cacheKey);
+    if (cached) {
+      console.log('[API] duplicate request prevented /api/friends');
+      return res.json(cached);
+    }
 
     const response = await cloudant.postFind({
       db: DB,
-      selector: { $or: [{ sender_id: userId }, { receiver_id: userId }] }
+      selector: { $or: [{ sender_id: userId }, { receiver_id: userId }] },
+      limit: 500
     });
 
     const list = response.result.docs;
@@ -278,9 +334,14 @@ router.get('/', ensureAuthenticated, async (req, res) => {
     const pendingSent     = list.filter(f => f.status === 'pending' && f.sender_id === userId);
     const pendingReceived = list.filter(f => f.status === 'pending' && f.receiver_id === userId);
 
-    return res.json({ success: true, friends: accepted, pendingSent, pendingReceived, all: list });
+    const payload = { success: true, friends: accepted, pendingSent, pendingReceived, all: list };
+    friendsCache.set(cacheKey, payload);
+    return res.json(payload);
   } catch (err) {
     console.error('[FRIENDS] Get list error:', err.message);
+    if (isCloudantRateLimit(err)) {
+      return res.status(429).json({ success: false, error: 'Cloudant rate limit reached. Please retry shortly.' });
+    }
     return res.status(500).json({ success: false, error: 'Failed to fetch friends' });
   }
 });

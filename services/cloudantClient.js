@@ -57,6 +57,54 @@ const cloudant = hasCloudantCredentials
     return createUnavailableCloudantClient();
   })();
 
+function isRateLimitError(err) {
+  const status = err?.status || err?.statusCode;
+  const message = String(err?.message || err?.body?.error || '').toLowerCase();
+  return status === 429 || message.includes('too_many_requests') || message.includes('rate limit');
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function wrapCloudantMethod(methodName) {
+  if (!cloudant || typeof cloudant[methodName] !== 'function') return;
+  const original = cloudant[methodName].bind(cloudant);
+  cloudant[methodName] = async (params = {}) => {
+    const db = params.db || 'unknown';
+    const target = params.view ? `${params.ddoc || 'ddoc'}/${params.view}` : (params.docId || '');
+    console.log(`[CLOUDANT] query start ${methodName} db=${db}${target ? ` target=${target}` : ''}`);
+
+    try {
+      const result = await original(params);
+      if (['postView', 'postFind'].includes(methodName)) {
+        console.log(`[CLOUDANT] query optimized ${methodName} db=${db}`);
+      }
+      return result;
+    } catch (err) {
+      if (!isRateLimitError(err)) throw err;
+
+      const retryAfterHeader = err?.headers?.['retry-after'] || err?.response?.headers?.['retry-after'];
+      const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : 350;
+      console.warn(`[CLOUDANT] retry after rate limit ${methodName} db=${db} delay=${retryAfterMs}ms`);
+      await delay(Number.isFinite(retryAfterMs) ? retryAfterMs : 350);
+      return original(params);
+    }
+  };
+}
+
+[
+  'getDatabaseInformation',
+  'getDesignDocument',
+  'postDocument',
+  'getDocument',
+  'postView',
+  'postFind',
+  'postAllDocs',
+  'putDocument',
+  'deleteDocument',
+].forEach(wrapCloudantMethod);
+
 // ─────────────────────────────────────────────
 // All databases required by the platform
 // ─────────────────────────────────────────────
@@ -76,8 +124,6 @@ const DATABASES = [
   // Phase 4: Realtime discussions
   'channels',
   'messages',
-  'message_reactions',
-  'unread_states',
   // GitHub Codespaces labs
   'lab_sessions',
 ];
@@ -128,6 +174,19 @@ async function createDesignDocs() {
         },
       },
     },
+    // Users: discover onboarded users without scanning every user document
+    {
+      db: 'users',
+      docId: '_design/users',
+      doc: {
+        _id: '_design/users',
+        views: {
+          by_onboarded: {
+            map: 'function(doc) { if (doc.is_onboarded === true) emit([true, doc.username || doc.email || doc._id], null); }',
+          },
+        },
+      },
+    },
     // Comments: query by post_id
     {
       db: 'comments',
@@ -162,7 +221,7 @@ async function createDesignDocs() {
         _id: '_design/friendships',
         views: {
           by_user: {
-            map: 'function(doc) { emit(doc.user_1, null); emit(doc.user_2, null); }',
+            map: 'function(doc) { if (doc.sender_id) emit(doc.sender_id, null); if (doc.receiver_id) emit(doc.receiver_id, null); if (doc.user_1) emit(doc.user_1, null); if (doc.user_2) emit(doc.user_2, null); }',
           },
         },
       },
@@ -176,6 +235,22 @@ async function createDesignDocs() {
         views: {
           by_member: {
             map: 'function(doc) { if (doc.members) { doc.members.forEach(function(m) { emit(m, null); }); } }',
+          },
+          by_created_at: {
+            map: 'function(doc) { if (doc.created_at) emit(doc.created_at, null); }',
+          },
+        },
+      },
+    },
+    // Community lists: separate doc so existing community indexes do not block this startup add
+    {
+      db: 'communities',
+      docId: '_design/community_lists',
+      doc: {
+        _id: '_design/community_lists',
+        views: {
+          by_created_at: {
+            map: 'function(doc) { if (doc.created_at) emit(doc.created_at, null); }',
           },
         },
       },
@@ -266,41 +341,6 @@ async function createDesignDocs() {
           },
           pinned_by_channel: {
             map: 'function(doc) { if (doc.channel_id && doc.pinned === true && doc.pinned_at) emit([doc.channel_id, doc.pinned_at], null); }',
-          },
-        },
-      },
-    },
-    // Message reactions: query by message
-    {
-      db: 'message_reactions',
-      docId: '_design/message_reactions',
-      doc: {
-        _id: '_design/message_reactions',
-        views: {
-          by_message: {
-            map: 'function(doc) { if (doc.message_id && doc.created_at) emit([doc.message_id, doc.emoji || null, doc.created_at], null); }',
-          },
-          by_message_user: {
-            map: 'function(doc) { if (doc.message_id && doc.user_id) emit([doc.message_id, doc.user_id, doc.emoji || null], null); }',
-          },
-        },
-      },
-    },
-    // Unread states: query by user/channel
-    {
-      db: 'unread_states',
-      docId: '_design/unread_states',
-      doc: {
-        _id: '_design/unread_states',
-        views: {
-          by_user: {
-            map: 'function(doc) { if (doc.user_id && doc.updated_at) emit([doc.user_id, doc.updated_at], null); }',
-          },
-          by_user_channel: {
-            map: 'function(doc) { if (doc.user_id && doc.channel_id) emit([doc.user_id, doc.channel_id], null); }',
-          },
-          by_channel: {
-            map: 'function(doc) { if (doc.channel_id) emit(doc.channel_id, null); }',
           },
         },
       },

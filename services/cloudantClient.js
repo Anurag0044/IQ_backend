@@ -49,9 +49,13 @@ const cloudant = hasCloudantCredentials
       authenticator: authenticator,
     });
     client.setServiceUrl(process.env.CLOUDANT_URL);
+    console.log('[LABS][CLOUDANT] Cloudant client initialized');
     return client;
   })()
-  : createUnavailableCloudantClient();
+  : (() => {
+    console.warn('[LABS][CLOUDANT] Cloudant client not initialized; credentials missing');
+    return createUnavailableCloudantClient();
+  })();
 
 // ─────────────────────────────────────────────
 // All databases required by the platform
@@ -74,6 +78,8 @@ const DATABASES = [
   'messages',
   'message_reactions',
   'unread_states',
+  // GitHub Codespaces labs
+  'lab_sessions',
 ];
 
 /**
@@ -295,6 +301,22 @@ async function createDesignDocs() {
           },
           by_channel: {
             map: 'function(doc) { if (doc.channel_id) emit(doc.channel_id, null); }',
+          },
+        },
+      },
+    },
+    // Lab sessions: query active labs by user and expired labs for cleanup
+    {
+      db: 'lab_sessions',
+      docId: '_design/lab_sessions',
+      doc: {
+        _id: '_design/lab_sessions',
+        views: {
+          by_user_status: {
+            map: 'function(doc) { if (doc.user_id && doc.status) emit([doc.user_id, doc.status, doc.created_at], null); }',
+          },
+          by_status_expires_at: {
+            map: 'function(doc) { if (doc.status && doc.expires_at) emit([doc.status, doc.expires_at], null); }',
           },
         },
       },

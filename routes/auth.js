@@ -15,13 +15,31 @@ const adminDb = require('../services/adminDb');
 const router = express.Router();
 const { ensureAuthenticated } = require('../middleware/authMiddleware');
 
+const hasAppIdCredentials = Boolean(
+  process.env.APPID_TENANT_ID &&
+  process.env.APPID_CLIENT_ID &&
+  process.env.APPID_SECRET &&
+  process.env.APPID_OAUTH_SERVER_URL &&
+  process.env.APPID_REDIRECT_URI
+);
+
+function ensureAppIdConfigured(_req, res, next) {
+  if (!hasAppIdCredentials) {
+    console.warn('[AUTH] IBM App ID is not configured for /api/auth route.');
+    return res.status(503).json({
+      success: false,
+      error: 'Authentication is not configured on this backend instance.',
+    });
+  }
+  return next();
+}
 
 /**
  * GET /auth/login
  * Initiates IBM App ID login flow
  * Redirects user to App ID hosted login page
  */
-router.get('/login', passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
+router.get('/login', ensureAppIdConfigured, passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
   forceLogin: true,
 }));
 
@@ -30,7 +48,7 @@ router.get('/login', passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
  * IBM App ID redirects here after successful authentication
  * Processes the auth code and creates a session
  */
-router.get('/callback', passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
+router.get('/callback', ensureAppIdConfigured, passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
   failureRedirect: `${process.env.FRONTEND_URL}/?error=auth_failed`,
   failureFlash: false,
 }), async (req, res) => {
@@ -160,6 +178,10 @@ router.get('/status', async (req, res) => {
  * Visit: http://localhost:5000/auth/debug-user
  */
 router.get('/debug-user', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ success: false, error: 'Not Found' });
+  }
+
   if (!req.isAuthenticated || !req.isAuthenticated()) {
     return res.json({
       loggedIn: false,

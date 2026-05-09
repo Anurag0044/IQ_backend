@@ -19,6 +19,10 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const { WebAppStrategy } = require('ibmcloud-appid');
 const { extractUserInfo } = require('./middleware/auth');
+const { adminCache } = require('./services/cacheService');
+const githubAuthRoutes = require("./routes/githubAuth");
+
+const labsRoutes = require("./routes/labs");
 
 const adminRoutes = require('./routes/admin');
 const adminDb = require('./services/adminDb');
@@ -34,6 +38,7 @@ const tutorialsRoutes = require('./routes/tutorials');
 const orionRoutes = require('./routes/orion');
 const discussionsRoutes = require('./routes/discussions');
 const { attachDiscussionSocketHandlers } = require('./sockets/discussions');
+const { startLabCleanupService, stopLabCleanupService } = require('./services/labCleanupService');
 
 const app = express();
 const http = require('http');
@@ -64,6 +69,13 @@ const userSockets = new Map();
 app.set('io', io);
 app.set('userSockets', userSockets);
 
+function normalizeSocketUserId(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 200) return null;
+  return trimmed;
+}
+
 const { startStatsBroadcaster } = require('./services/statsService');
 startStatsBroadcaster(io);
 
@@ -71,15 +83,19 @@ io.on('connection', (socket) => {
   console.log(`[SOCKET] Client connected: ${socket.id}`);
 
   socket.on('register', (payload) => {
-    const userId = typeof payload === 'string'
+    const rawUserId = typeof payload === 'string'
       ? payload
-      : (payload?.sub || payload?.userId);
-    if (!userId) return;
+      : (payload && typeof payload === 'object' ? (payload.sub || payload.userId) : null);
+    const userId = normalizeSocketUserId(rawUserId);
+    if (!userId) {
+      socket.emit('socket_error', { code: 'invalid_register', message: 'Invalid socket registration payload.' });
+      return;
+    }
 
     // Optional identity details (used by discussion sockets for names/admin checks)
     if (payload && typeof payload === 'object') {
-      if (payload.email) socket.data.email = String(payload.email).toLowerCase();
-      if (payload.username) socket.data.username = String(payload.username);
+      if (payload.email) socket.data.email = String(payload.email).trim().toLowerCase().slice(0, 254);
+      if (payload.username) socket.data.username = String(payload.username).trim().slice(0, 120);
     }
 
     const existingSocketId = userSockets.get(userId);
@@ -140,8 +156,8 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // 3. Parsing & Logging
 // ─────────────────────────────────────────────
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: process.env.FORM_BODY_LIMIT || '1mb' }));
 app.use(morgan('dev'));
 
 // ─────────────────────────────────────────────
@@ -166,6 +182,11 @@ app.use(session({
 // ─────────────────────────────────────────────
 app.use(passport.initialize());
 app.use(passport.session());
+//____________________________________________________________________________________________________________________________
+//github authroutes
+app.use("/api/github", githubAuthRoutes);
+
+app.use("/api/labs", labsRoutes);
 
 // IBM App ID strategy
 if (hasAppIdCredentials) {
@@ -365,6 +386,10 @@ app.get('/auth/status', async (req, res) => {
  * Debug only — shows raw user object and role locations
  */
 app.get('/debug-user', async (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ success: false, error: 'Not Found' });
+  }
+
   if (!req.isAuthenticated || !req.isAuthenticated()) {
     return res.json({
       loggedIn: false,
@@ -436,31 +461,37 @@ app.get('/api/user-role', async (req, res) => {
  * Body: { "newAdminEmail": "admin@example.com" }
  */
 app.post('/api/add-admin', async (req, res) => {
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
-    return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
+  try {
+    if (!req.isAuthenticated || !req.isAuthenticated()) {
+      return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
+    }
+
+    const callerEmail = (
+      req.user.email || req.user.emails?.[0]?.value || ''
+    ).toLowerCase();
+
+    // Only the super admin can add other admins
+    if (!adminDb.isSuperAdmin(callerEmail)) {
+      console.warn(`[API] /api/add-admin: Non-super-admin attempt by ${callerEmail}`);
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden',
+        message: 'Only the super admin can add other admins.',
+      });
+    }
+
+    const { newAdminEmail } = req.body;
+    if (!newAdminEmail || typeof newAdminEmail !== 'string') {
+      return res.status(400).json({ success: false, error: 'newAdminEmail is required.' });
+    }
+
+    const result = await adminDb.addAdmin(newAdminEmail);
+    if (result.success) adminCache.delete(`admin:${newAdminEmail.trim().toLowerCase()}`);
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (err) {
+    console.error('[API] /api/add-admin error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to add admin.' });
   }
-
-  const callerEmail = (
-    req.user.email || req.user.emails?.[0]?.value || ''
-  ).toLowerCase();
-
-  // Only the super admin can add other admins
-  if (!adminDb.isSuperAdmin(callerEmail)) {
-    console.warn(`[API] /api/add-admin: Non-super-admin attempt by ${callerEmail}`);
-    return res.status(403).json({
-      success: false,
-      error: 'Forbidden',
-      message: 'Only the super admin can add other admins.',
-    });
-  }
-
-  const { newAdminEmail } = req.body;
-  if (!newAdminEmail || typeof newAdminEmail !== 'string') {
-    return res.status(400).json({ success: false, error: 'newAdminEmail is required.' });
-  }
-
-  const result = await adminDb.addAdmin(newAdminEmail);
-  return res.status(result.success ? 200 : 400).json(result);
 });
 
 /**
@@ -471,29 +502,35 @@ app.post('/api/add-admin', async (req, res) => {
  * Body: { "adminEmail": "admin@example.com" }
  */
 app.delete('/api/remove-admin', async (req, res) => {
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
-    return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
+  try {
+    if (!req.isAuthenticated || !req.isAuthenticated()) {
+      return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
+    }
+
+    const callerEmail = (
+      req.user.email || req.user.emails?.[0]?.value || ''
+    ).toLowerCase();
+
+    if (!adminDb.isSuperAdmin(callerEmail)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden',
+        message: 'Only the super admin can remove admins.',
+      });
+    }
+
+    const { adminEmail } = req.body;
+    if (!adminEmail) {
+      return res.status(400).json({ success: false, error: 'adminEmail is required.' });
+    }
+
+    const result = await adminDb.removeAdmin(adminEmail);
+    if (result.success) adminCache.delete(`admin:${String(adminEmail).trim().toLowerCase()}`);
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (err) {
+    console.error('[API] /api/remove-admin error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to remove admin.' });
   }
-
-  const callerEmail = (
-    req.user.email || req.user.emails?.[0]?.value || ''
-  ).toLowerCase();
-
-  if (!adminDb.isSuperAdmin(callerEmail)) {
-    return res.status(403).json({
-      success: false,
-      error: 'Forbidden',
-      message: 'Only the super admin can remove admins.',
-    });
-  }
-
-  const { adminEmail } = req.body;
-  if (!adminEmail) {
-    return res.status(400).json({ success: false, error: 'adminEmail is required.' });
-  }
-
-  const result = await adminDb.removeAdmin(adminEmail);
-  return res.status(result.success ? 200 : 400).json(result);
 });
 
 /**
@@ -551,7 +588,16 @@ app.use((req, res) => {
 
 app.use((err, req, res, next) => {
   console.error('[ERROR]', err.stack || err.message || err);
-  res.status(err.statusCode || 500).json({ success: false, error: 'Server Error', message: err.message || 'Something went wrong' });
+  const uploadError = err.name === 'MulterError' || /Only .* allowed|files are allowed|File too large/i.test(err.message || '');
+  const status = uploadError ? 400 : (err.status || err.statusCode || 500);
+  const isClientError = status >= 400 && status < 500;
+  res.status(status).json({
+    success: false,
+    error: isClientError ? 'Request Error' : 'Server Error',
+    message: isClientError || process.env.NODE_ENV !== 'production'
+      ? (err.message || 'Something went wrong')
+      : 'Something went wrong',
+  });
 });
 
 // ─────────────────────────────────────────────
@@ -609,6 +655,25 @@ server.listen(PORT, () => {
     console.log('  IBM App ID is disabled until the required environment variables are provided.');
     console.log('');
   }
+
+  startLabCleanupService();
 });
+
+async function shutdown(signal) {
+  console.log(`[SERVER] ${signal} received. Shutting down gracefully...`);
+  try {
+    await stopLabCleanupService();
+  } catch (err) {
+    console.error('[SERVER] Failed to stop lab cleanup service:', err.message);
+  }
+
+  server.close(() => {
+    console.log('[SERVER] HTTP server closed.');
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 module.exports = app;

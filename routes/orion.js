@@ -4,9 +4,54 @@ const { ensureAuthenticated } = require('../middleware/auth');
 
 const router = express.Router();
 
-const NVIDIA_API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
-const NVIDIA_API_KEY = process.env.ORION_API_KEY || '';
-const ORION_MODEL = process.env.ORION_MODEL || 'meta/llama-3.1-8b-instruct'; // Default fallback to high-speed Llama model
+const NVIDIA_API_URL = process.env.NVIDIA_API_URL || 'https://integrate.api.nvidia.com/v1/chat/completions';
+const NVIDIA_API_KEY = process.env.ORION_API_KEY || process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY || '';
+const ORION_MODEL = normalizeNvidiaModel(process.env.ORION_MODEL || 'moonshotai/kimi-k2-instruct');
+const ORION_VISION_MODEL = normalizeNvidiaModel(process.env.ORION_VISION_MODEL || 'meta/llama-3.2-11b-vision-instruct');
+
+function normalizeNvidiaModel(model) {
+  const value = String(model || '').trim();
+  if (!value) return 'moonshotai/kimi-k2-instruct';
+  if (value === 'kimi-k2-instruct') return 'moonshotai/kimi-k2-instruct';
+  if (value === 'kimi-k2-instruct-0905') return 'moonshotai/kimi-k2-instruct-0905';
+  return value;
+}
+
+function parseNvidiaErrorBody(body) {
+  if (!body) return null;
+
+  if (Buffer.isBuffer(body)) {
+    return parseNvidiaErrorBody(body.toString('utf8'));
+  }
+
+  if (typeof body === 'string') {
+    try {
+      return parseNvidiaErrorBody(JSON.parse(body));
+    } catch {
+      return body;
+    }
+  }
+
+  return body?.error?.message || body?.message || body?.detail || JSON.stringify(body);
+}
+
+async function readStreamBody(stream) {
+  if (!stream || typeof stream.on !== 'function') return parseNvidiaErrorBody(stream);
+
+  return new Promise((resolve) => {
+    let body = '';
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk) => {
+      body += chunk;
+    });
+    stream.on('end', () => {
+      resolve(parseNvidiaErrorBody(body));
+    });
+    stream.on('error', (err) => {
+      resolve(err.message);
+    });
+  });
+}
 
 const SYSTEM_PROMPT = [
   'You are Orion A.I, an exclusive and highly advanced cloud computing mentor integrated into the CloudIQ learning platform.',
@@ -58,7 +103,7 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
     let finalModel = ORION_MODEL;
 
     if (images.length > 0) {
-      finalModel = 'meta/llama-3.2-11b-vision-instruct';
+      finalModel = ORION_VISION_MODEL;
       userContent = [{ type: "text", text: finalQuery || "Please describe the attached images." }];
       images.forEach(imgBase64 => {
         userContent.push({ type: "image_url", image_url: { url: imgBase64 } });
@@ -66,11 +111,6 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
     } else {
       userContent = finalQuery;
     }
-
-    // Set headers for streaming
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
 
     const response = await axios.post(
       NVIDIA_API_URL,
@@ -91,17 +131,43 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
           'Content-Type': 'application/json',
         },
         responseType: 'stream', // AXIOS STREAM MODE
+        timeout: Number(process.env.ORION_API_TIMEOUT_MS || 60000),
+        validateStatus: () => true,
       }
     );
 
+    if (response.status < 200 || response.status >= 300) {
+      const upstreamDetails = await readStreamBody(response.data);
+      console.error('[ORION] NVIDIA API error:', {
+        status: response.status,
+        model: finalModel,
+        details: upstreamDetails,
+      });
+
+      return res.status(502).json({
+        success: false,
+        error: 'Orion failed to respond from NVIDIA.',
+        details: upstreamDetails || `NVIDIA returned HTTP ${response.status}`,
+        model: finalModel,
+      });
+    }
+
+    // Set headers only after NVIDIA accepts the request, so JSON errors stay readable.
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
     // Pipe the stream from NVIDIA to the client
+    let streamBuffer = '';
     response.data.on('data', (chunk) => {
-      const payload = chunk.toString();
-      const lines = payload.split('\n');
+      streamBuffer += chunk.toString();
+      const lines = streamBuffer.split('\n');
+      streamBuffer = lines.pop() || '';
       
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data: ')) {
+          const data = trimmed.slice(6).trim();
           if (data === '[DONE]') {
             res.write('data: [DONE]\n\n');
             continue;
@@ -114,7 +180,7 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
               res.write(`data: ${JSON.stringify({ content, model: finalModel })}\n\n`);
             }
           } catch (e) {
-            // Partial JSON or error, skip
+            console.warn('[ORION] Skipped malformed stream chunk:', e.message);
           }
         }
       }
@@ -131,8 +197,12 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
     });
 
   } catch (error) {
-    const details = error?.response?.data?.message || error.message || 'Unknown error';
-    console.error('[ORION] API error:', details);
+    const responseBody = await readStreamBody(error?.response?.data);
+    const details = responseBody || error.message || 'Unknown error';
+    console.error('[ORION] API error:', {
+      status: error?.response?.status,
+      details,
+    });
     
     // If headers already sent, we must send the error inside the stream
     if (res.headersSent) {
@@ -144,6 +214,7 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
       success: false,
       error: 'Orion failed to respond. Please try again.',
       details,
+      model: ORION_MODEL,
     });
   }
 });

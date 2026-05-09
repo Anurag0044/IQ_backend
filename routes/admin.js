@@ -20,6 +20,7 @@ const {
 } = require('../services/adminDb');
 const { extractUserInfo } = require('../middleware/auth');
 const cloudant = require('../services/cloudantClient');
+const { adminCache } = require('../services/cacheService');
 
 const router = express.Router();
 
@@ -105,6 +106,7 @@ router.post('/add', async (req, res) => {
 
     const result = await addAdmin(email, role, addedByEmail);
     if (!result.success) return res.status(400).json({ success: false, error: result.message });
+    adminCache.delete(`admin:${String(email).trim().toLowerCase()}`);
     return res.status(201).json({ success: true, message: result.message });
   } catch (err) {
     console.error('[ADMIN] add error:', err.message);
@@ -128,6 +130,7 @@ router.put('/:id/role', async (req, res) => {
 
     const result = await updateAdminRole(targetEmail, newRole, updatedByEmail);
     if (!result.success) return res.status(400).json({ success: false, error: result.message });
+    adminCache.delete(`admin:${String(targetEmail).trim().toLowerCase()}`);
     return res.json({ success: true, message: result.message });
   } catch (err) {
     console.error('[ADMIN] update role error:', err.message);
@@ -146,6 +149,7 @@ router.delete('/:id', async (req, res) => {
 
     const result = await removeAdmin(targetEmail, removedByEmail);
     if (!result.success) return res.status(400).json({ success: false, error: result.message });
+    adminCache.delete(`admin:${String(targetEmail).trim().toLowerCase()}`);
     return res.json({ success: true, message: result.message });
   } catch (err) {
     console.error('[ADMIN] delete error:', err.message);

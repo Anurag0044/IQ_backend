@@ -174,7 +174,6 @@ router.post(
       const { userId, email, username } = extractUserInfo(req.user);
       const isAdmin = await checkAdminRole(req.user);
 
-      if (community_id && !isAdmin) {
       // Authorization check:
       // - Admins can create any tutorial (global or for a community).
       // - Non-admins can only create tutorials for a community they are a member of.
@@ -186,9 +185,7 @@ router.post(
         const isMember = await isCommunityMember(userId, community_id);
         if (!isMember) {
           return res.status(403).json({ success: false, error: 'You must be a community member to publish tutorials here.' });
-          return res.status(403).json({ success: false, error: 'You must be a community member to publish tutorials in this community.' });
         }
-      }
 
         // Per-user tutorial creation limit for non-moderators
         const isModerator = await isCommunityModerator(userId, community_id);
@@ -203,7 +200,7 @@ router.post(
             return res.status(403).json({ success: false, error: 'You have reached the maximum of 3 tutorials for this community. Admins and co-admins can create more.' });
           }
         }
-      } // This brace closes the if(!isAdmin)
+      }
 
       const imageFile = req.files?.image?.[0] || null;
       const videoFile = req.files?.video?.[0] || null;

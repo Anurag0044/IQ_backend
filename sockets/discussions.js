@@ -129,6 +129,18 @@ function emitDiscussionError(socket, code, message, extra = {}) {
   socket.emit('discussion_error', { code, message, ...extra });
 }
 
+function normalizeSocketId(value, maxLength = 120) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLength) return null;
+  return trimmed;
+}
+
+function normalizeSocketText(value, maxLength = 4000) {
+  if (typeof value !== 'string') return '';
+  return value.trim().slice(0, maxLength);
+}
+
 // ─── In-memory unread counters (batch-flushed to Cloudant) ───────────────────
 // Key: `${userId}:${channelId}` → { count, communityId, dirty }
 const pendingUnreads = new Map();
@@ -241,8 +253,9 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
   // Start the unread flusher on first attachment (idempotent)
   if (!unreadFlushTimer) startUnreadFlusher(cloudant);
 
-  socket.on('join_community_discussions', async ({ community_id }) => {
+  socket.on('join_community_discussions', async (payload = {}) => {
     try {
+      const community_id = normalizeSocketId(payload?.community_id);
       const userId = socket.data.userId;
       if (!userId || !community_id) {
         emitDiscussionError(socket, 'invalid_join_community', 'Missing user or community id');
@@ -268,7 +281,8 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
     }
   });
 
-  socket.on('leave_community_discussions', async ({ community_id }) => {
+  socket.on('leave_community_discussions', async (payload = {}) => {
+    const community_id = normalizeSocketId(payload?.community_id);
     const userId = socket.data.userId;
     if (!userId || !community_id) return;
     socket.leave(`community:${community_id}`);
@@ -277,8 +291,9 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
     io.to(`community:${community_id}`).emit('join_leave_updates', { type: 'leave', community_id, user_id: userId, at: nowIso() });
   });
 
-  socket.on('join_channel', async ({ channel_id }) => {
+  socket.on('join_channel', async (payload = {}) => {
     try {
+      const channel_id = normalizeSocketId(payload?.channel_id);
       const userId = socket.data.userId;
       if (!userId || !channel_id) {
         emitDiscussionError(socket, 'invalid_join_channel', 'Missing user or channel id');
@@ -318,33 +333,39 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
     }
   });
 
-  socket.on('leave_channel', async ({ channel_id }) => {
+  socket.on('leave_channel', async (payload = {}) => {
+    const channel_id = normalizeSocketId(payload?.channel_id);
     const userId = socket.data.userId;
     if (!userId || !channel_id) return;
     socket.leave(`channel:${channel_id}`);
     socket.to(`channel:${channel_id}`).emit('join_leave_updates', { type: 'leave', channel_id, user_id: userId, at: nowIso() });
   });
 
-  socket.on('typing_start', ({ channel_id }) => {
+  socket.on('typing_start', (payload = {}) => {
+    const channel_id = normalizeSocketId(payload?.channel_id);
     const userId = socket.data.userId;
     if (!userId || !channel_id) return;
     socket.to(`channel:${channel_id}`).emit('typing_start', { channel_id, user_id: userId, at: nowIso() });
   });
 
-  socket.on('typing_stop', ({ channel_id }) => {
+  socket.on('typing_stop', (payload = {}) => {
+    const channel_id = normalizeSocketId(payload?.channel_id);
     const userId = socket.data.userId;
     if (!userId || !channel_id) return;
     socket.to(`channel:${channel_id}`).emit('typing_stop', { channel_id, user_id: userId, at: nowIso() });
   });
 
-  socket.on('new_message', async ({ channel_id, content, client_temp_id }) => {
+  socket.on('new_message', async (payload = {}) => {
     try {
+      const channel_id = normalizeSocketId(payload?.channel_id);
+      const content = normalizeSocketText(payload?.content);
+      const client_temp_id = normalizeSocketId(payload?.client_temp_id, 120);
       const userId = socket.data.userId;
       if (!userId || !channel_id) {
         emitDiscussionError(socket, 'invalid_message', 'Missing user or channel id');
         return;
       }
-      if (!content || !String(content).trim()) return;
+      if (!content) return;
 
       const channel = await getDocOrNull(cloudant, DB_CHANNELS, channel_id);
       if (!channel) {
@@ -379,7 +400,7 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
         sender_id: userId,
         sender_name: username,
         type: 'text',
-        content: String(content).trim(),
+        content,
         media: null,
         pinned: false,
         pinned_at: null,
@@ -402,8 +423,11 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
     }
   });
 
-  socket.on('message_reaction', async ({ message_id, emoji, action }) => {
+  socket.on('message_reaction', async (payload = {}) => {
     try {
+      const message_id = normalizeSocketId(payload?.message_id);
+      const emoji = normalizeSocketText(payload?.emoji, 32);
+      const action = payload?.action;
       const userId = socket.data.userId;
       if (!userId || !message_id || !emoji) return;
 

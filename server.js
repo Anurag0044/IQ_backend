@@ -18,6 +18,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const { WebAppStrategy } = require('ibmcloud-appid');
+const { extractUserInfo } = require('./middleware/auth');
 
 const adminRoutes = require('./routes/admin');
 const adminDb = require('./services/adminDb');
@@ -70,7 +71,9 @@ io.on('connection', (socket) => {
   console.log(`[SOCKET] Client connected: ${socket.id}`);
 
   socket.on('register', (payload) => {
-    const userId = typeof payload === 'string' ? payload : payload?.userId;
+    const userId = typeof payload === 'string'
+      ? payload
+      : (payload?.sub || payload?.userId);
     if (!userId) return;
 
     // Optional identity details (used by discussion sockets for names/admin checks)
@@ -310,6 +313,7 @@ app.get('/auth/user', async (req, res) => {
   const user = req.user;
   const roles = extractRoles(user);
   const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
+  const { userId } = extractUserInfo(user);
 
   // Sync user to database (creates them if they don't exist, updates lastLogin)
   try {
@@ -329,6 +333,8 @@ app.get('/auth/user', async (req, res) => {
     loggedIn: true,
     success: true,
     user: {
+      userId: userId || null,
+      sub: userId || null,
       name: user.name || user.given_name || 'User',
       email: email || null,
       picture: user.picture || null,

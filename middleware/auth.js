@@ -23,7 +23,7 @@ function extractUserInfo(reqUser) {
     null
   );
 
-  let userId = reqUser.sub || email;
+  let userId = reqUser.sub || null;
 
   // Try to get sub from identity token (most reliable)
   if (reqUser.identityToken) {
@@ -35,6 +35,12 @@ function extractUserInfo(reqUser) {
     } catch (e) {
       // ignore decode errors
     }
+  }
+
+  // Backward-compatible fallback for non-App ID local/dev sessions only.
+  // Permission-bearing records should still be written with IBM App ID sub.
+  if (!userId) {
+    userId = reqUser.id || reqUser.user_id || null;
   }
 
   const username =

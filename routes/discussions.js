@@ -53,6 +53,26 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+async function syncMessageToFirebase(channelId, messageDoc) {
+  if (!firebaseService.db || !channelId || !messageDoc?._id) return;
+
+  const firebaseMessage = {
+    _id: messageDoc._id,
+    channel_id: messageDoc.channel_id,
+    community_id: messageDoc.community_id,
+    sender_id: messageDoc.sender_id,
+    sender_name: messageDoc.sender_name,
+    type: messageDoc.type,
+    content: messageDoc.content || null,
+    media: messageDoc.media || null,
+    pinned: Boolean(messageDoc.pinned),
+    pinned_at: messageDoc.pinned_at || null,
+    created_at: messageDoc.created_at,
+  };
+
+  await firebaseService.db.ref(`messages/${channelId}/${messageDoc._id}`).set(firebaseMessage);
+}
+
 // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Cached community fetch Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 async function getCommunityOr404(communityId, { bustCache = false } = {}) {
   const cacheKey = `comm:${communityId}`;
@@ -197,6 +217,10 @@ router.get('/communities/:communityId/channels', ensureAuthenticated, async (req
     const channels = allChannels
       .filter((ch) => canAccessChannel({ channel: ch, userId, isAdmin, isMod }))
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+    firebaseService.syncChannelBatch(channels).catch(err =>
+      console.warn('[DISCUSSIONS] Firebase channel list sync failed:', err.message)
+    );
 
     return res.json({ success: true, channels });
   } catch (err) {
@@ -379,19 +403,19 @@ router.get('/channels/:channelId/messages', ensureAuthenticated, async (req, res
     const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
     const before = req.query.before ? String(req.query.before) : null;
 
-    // postFind — no design document required
-    const selector = before
-      ? { channel_id: channel._id, created_at: { $lt: before } }
-      : { channel_id: channel._id };
-
-    const findRes = await cloudant.postFind({
+    const viewRes = await cloudant.postView({
       db: DB_MESSAGES,
-      selector,
-      sort: [{ created_at: 'desc' }],
+      ddoc: 'messages',
+      view: 'by_channel_created_at',
+      startKey: before ? [channel._id, before] : [channel._id, {}],
+      endKey: [channel._id],
+      descending: true,
+      includeDocs: true,
       limit,
     });
 
-    const messages = (findRes.result.docs || [])
+    const messages = (viewRes.result.rows || [])
+      .map((row) => row.doc)
       .filter((doc) => doc && !doc._id.startsWith('_design'))
       .reverse(); // return in ascending order (oldest first) for display
 
@@ -441,6 +465,10 @@ router.post('/channels/:channelId/messages', ensureAuthenticated, async (req, re
 
     const write = await cloudant.postDocument({ db: DB_MESSAGES, document: messageDoc });
     if (!write.result.ok) return res.status(500).json({ success: false, error: 'Failed to create message' });
+
+    syncMessageToFirebase(channel._id, messageDoc).catch(err =>
+      console.warn('[DISCUSSIONS] Firebase sync failed for message:', err.message)
+    );
 
     const io = req.app.get('io');
     if (io) io.to(`channel:${channel._id}`).emit('new_message', messageDoc);
@@ -556,21 +584,7 @@ router.post(
       // Ã¢â€â‚¬Ã¢â€â‚¬ Sync message to Firebase (Firebase is source of truth for rendering) Ã¢â€â‚¬Ã¢â€â‚¬
       try {
         if (firebaseService.db) {
-          const firebaseMessage = {
-            _id: messageDoc._id,
-            channel_id: messageDoc.channel_id,
-            community_id: messageDoc.community_id,
-            sender_id: messageDoc.sender_id,
-            sender_name: messageDoc.sender_name,
-            type: messageDoc.type,
-            content: messageDoc.content || null,
-            media: messageDoc.media,
-            pinned: messageDoc.pinned,
-            pinned_at: messageDoc.pinned_at || null,
-            created_at: messageDoc.created_at,
-          };
-          const messageRef = firebaseService.db.ref(`messages/${channel._id}/${messageDoc._id}`);
-          await messageRef.set(firebaseMessage);
+          await syncMessageToFirebase(channel._id, messageDoc);
           console.log(`[DISCUSSIONS] Synced media message to Firebase: ${messageDoc._id}`);
         }
       } catch (firebaseErr) {

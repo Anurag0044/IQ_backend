@@ -32,6 +32,9 @@ function createUnavailableCloudantClient() {
     getDocument: rejectUnavailable,
     postView: rejectUnavailable,
     postFind: rejectUnavailable,
+    postAllDocs: rejectUnavailable,
+    putDocument: rejectUnavailable,
+    deleteDocument: rejectUnavailable,
     setServiceUrl: () => { },
   };
 }

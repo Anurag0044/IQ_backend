@@ -119,7 +119,7 @@ async function createMembership(userId, username, userEmail, community, role = '
     await cloudant.postDocument({
       db: MEMBERS_DB,
       document: {
-        _id: uuidv4(),
+        _id: `membership:${community._id}:${userId}`,
         type: 'community_membership',
         community_id: community._id,
         community_name: community.name || '',
@@ -136,6 +136,7 @@ async function createMembership(userId, username, userEmail, community, role = '
     });
     console.log(`[COMMUNITIES] Membership created: user=${userId} community=${community._id} role=${role}`);
   } catch (err) {
+    if ((err.status || err.statusCode) === 409) return;
     console.warn('[COMMUNITIES] Create membership failed:', err.message);
   }
 }
@@ -434,9 +435,15 @@ router.post(
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      await cloudant.postDocument({ db: 'channels', document: defaultChannel }).catch(err => {
+      const defaultChannelWrite = await cloudant.postDocument({ db: 'channels', document: defaultChannel }).catch(err => {
         console.warn('[COMMUNITIES] Failed to create default discussion channel:', err.message);
+        return null;
       });
+      if (defaultChannelWrite?.result?.ok) {
+        firebaseService.syncChannel(defaultChannel).catch(err => {
+          console.warn('[COMMUNITIES] Failed to sync default channel:', err.message);
+        });
+      }
 
       const io = req.app.get('io');
       if (io) io.emit('community_created', sanitizeCommunity(community));
@@ -721,6 +728,7 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
         community_name: community.name,
         requester_id: userId,
         requester_name: username,
+        requester_email: email || '',
         status: 'pending',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -910,7 +918,7 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
 // ─────────────────────────────────────────────
 router.post('/:id/request', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId, username } = extractUserInfo(req.user);
+    const { userId, username, email } = extractUserInfo(req.user);
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
 
     if (community.visibility !== 'restricted') {
@@ -944,6 +952,7 @@ router.post('/:id/request', ensureAuthenticated, async (req, res) => {
       community_name: community.name,
       requester_id: userId,
       requester_name: username,
+      requester_email: email || '',
       status: 'pending',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -985,11 +994,11 @@ router.post('/:id/request', ensureAuthenticated, async (req, res) => {
 // ─────────────────────────────────────────────
 router.get('/:id/requests', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
+    const { userId, email } = extractUserInfo(req.user);
     const isAdmin = await getCachedAdminStatus(req.user);
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
 
-    const canManage = await isCommunityModerator(userId, community, isAdmin);
+    const canManage = await isCommunityModerator(userId, email, community, isAdmin);
     if (!canManage) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
@@ -998,7 +1007,8 @@ router.get('/:id/requests', ensureAuthenticated, async (req, res) => {
       db: REQUESTS_DB,
       ddoc: 'community_requests',
       view: 'by_community_status',
-      key: [community._id, 'pending'],
+      startKey: [community._id, 'pending'],
+      endKey: [community._id, 'pending', {}],
       includeDocs: true,
     });
 
@@ -1020,11 +1030,11 @@ router.get('/:id/requests', ensureAuthenticated, async (req, res) => {
 // ─────────────────────────────────────────────
 router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
+    const { userId, email } = extractUserInfo(req.user);
     const isAdmin = await getCachedAdminStatus(req.user);
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
 
-    const canManage = await isCommunityModerator(userId, community, isAdmin);
+    const canManage = await isCommunityModerator(userId, email, community, isAdmin);
     if (!canManage) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
@@ -1038,7 +1048,7 @@ router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req,
     requestDoc.status = 'approved';
     requestDoc.updated_at = new Date().toISOString();
     requestDoc.approved_by = userId;
-    await cloudant.postDocument({ db: REQUESTS_DB, document: requestDoc });
+    await cloudant.putDocument({ db: REQUESTS_DB, docId: requestDoc._id, document: requestDoc });
 
     if (!Array.isArray(community.members)) community.members = [];
     if (!community.members.includes(requestDoc.requester_id)) {
@@ -1046,9 +1056,17 @@ router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req,
     }
     community.member_count = community.members.length;
     community.updated_at = new Date().toISOString();
-    await cloudant.postDocument({ db: DB, document: community });
+    await cloudant.putDocument({ db: DB, docId: community._id, document: community });
 
-    await createMembership(requestDoc.requester_id, community);
+    await createMembership(
+      requestDoc.requester_id,
+      requestDoc.requester_name,
+      requestDoc.requester_email || '',
+      community,
+      'member'
+    );
+    membershipCache.set(`mem:${requestDoc.requester_id}:${community._id}`, true);
+    communityCache.delete(`comm:${community._id}`);
 
     const { senderName, senderAvatar } = await resolveSenderInfo(
       cloudant,
@@ -1091,11 +1109,11 @@ router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req,
 // ─────────────────────────────────────────────
 router.post('/:id/requests/:requestId/reject', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
+    const { userId, email } = extractUserInfo(req.user);
     const isAdmin = await getCachedAdminStatus(req.user);
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
 
-    const canManage = await isCommunityModerator(userId, community, isAdmin);
+    const canManage = await isCommunityModerator(userId, email, community, isAdmin);
     if (!canManage) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
@@ -1109,7 +1127,7 @@ router.post('/:id/requests/:requestId/reject', ensureAuthenticated, async (req, 
     requestDoc.status = 'rejected';
     requestDoc.updated_at = new Date().toISOString();
     requestDoc.rejected_by = userId;
-    await cloudant.postDocument({ db: REQUESTS_DB, document: requestDoc });
+    await cloudant.putDocument({ db: REQUESTS_DB, docId: requestDoc._id, document: requestDoc });
 
     const { senderName, senderAvatar } = await resolveSenderInfo(
       cloudant,

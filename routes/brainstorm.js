@@ -4,6 +4,16 @@ const brainstormService = require('../services/brainstormService');
 
 const router = express.Router();
 
+function emptyAiResponse(error = null, metadata = {}) {
+  return {
+    success: false,
+    idea: null,
+    ideas: [],
+    metadata,
+    error,
+  };
+}
+
 function sendServiceResult(res, result, successStatus = 200) {
   if (!result.ok) {
     return res.status(result.status || 400).json({
@@ -16,11 +26,35 @@ function sendServiceResult(res, result, successStatus = 200) {
   return res.status(successStatus).json({ success: true, ...payload });
 }
 
+function sendAiResult(res, result) {
+  const status = result.status || (result.ok ? 200 : 400);
+  const idea = result.idea || (Array.isArray(result.ideas) ? result.ideas[0] : null) || null;
+  return res.status(status).json({
+    success: Boolean(result.ok),
+    idea,
+    ideas: idea ? [idea] : [],
+    metadata: result.metadata || {},
+    error: result.ok ? null : (result.error || 'Brainstorm request failed'),
+    code: result.code || undefined,
+    generation: result.generation || undefined,
+  });
+}
+
 function handleError(res, err, fallback = 'Brainstorm request failed') {
   const status = err.status || err.statusCode || 500;
   return res.status(status).json({
     success: false,
     error: err.message || fallback,
+    code: err.code || undefined,
+  });
+}
+
+function handleAiError(res, err, fallback = 'Orion failed to generate ideas') {
+  const status = err.status || err.statusCode || 500;
+  return res.status(status).json({
+    ...emptyAiResponse(status >= 500 ? fallback : (err.message || fallback), {
+      code: err.code || 'orion_error',
+    }),
     code: err.code || undefined,
   });
 }
@@ -144,10 +178,12 @@ router.post('/ai/generate', async (req, res) => {
       action: 'generate',
       prompt: req.body?.prompt,
       roomId: req.body?.roomId || req.body?.room_id || null,
+      ideaCursor: req.body?.ideaCursor || req.body?.idea_cursor || req.body?.cursor || req.body?.index || null,
+      previousIdeas: req.body?.previousIdeas || req.body?.previous_ideas || req.body?.ideas || [],
     });
-    return sendServiceResult(res, result);
+    return sendAiResult(res, result);
   } catch (err) {
-    return handleError(res, err, 'Orion failed to generate ideas');
+    return handleAiError(res, err, 'Orion failed to generate ideas');
   }
 });
 
@@ -158,10 +194,11 @@ router.post('/ai/expand', async (req, res) => {
       action: 'expand',
       prompt: req.body?.prompt || req.body?.idea,
       roomId: req.body?.roomId || req.body?.room_id || null,
+      previousIdeas: req.body?.previousIdeas || req.body?.previous_ideas || [],
     });
-    return sendServiceResult(res, result);
+    return sendAiResult(res, result);
   } catch (err) {
-    return handleError(res, err, 'Orion failed to expand the idea');
+    return handleAiError(res, err, 'Orion failed to expand the idea');
   }
 });
 
@@ -172,10 +209,11 @@ router.post('/ai/project', async (req, res) => {
       action: 'project',
       prompt: req.body?.prompt || req.body?.idea,
       roomId: req.body?.roomId || req.body?.room_id || null,
+      previousIdeas: req.body?.previousIdeas || req.body?.previous_ideas || [],
     });
-    return sendServiceResult(res, result);
+    return sendAiResult(res, result);
   } catch (err) {
-    return handleError(res, err, 'Orion failed to convert the idea');
+    return handleAiError(res, err, 'Orion failed to convert the idea');
   }
 });
 

@@ -166,6 +166,25 @@ app.use(cors({
 // ─────────────────────────────────────────────
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: process.env.FORM_BODY_LIMIT || '1mb' }));
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    logger.warn('[HTTP] malformed JSON body', { path: req.originalUrl, method: req.method });
+    return res.status(400).json({
+      success: false,
+      error: 'Malformed JSON body.',
+      code: 'malformed_json',
+    });
+  }
+  if (err.type === 'entity.too.large') {
+    logger.warn('[HTTP] request body too large', { path: req.originalUrl, method: req.method });
+    return res.status(413).json({
+      success: false,
+      error: 'Request body is too large.',
+      code: 'payload_too_large',
+    });
+  }
+  return next(err);
+});
 app.use(morgan(':method :url :status :response-time ms', {
   skip: (_req, res) => res.statusCode < 400 && !logger.shouldLog('debug'),
   stream: {

@@ -2,6 +2,8 @@ const brainstormService = require('../services/brainstormService');
 const logger = require('../utils/logger');
 
 const MIN_SYNC_INTERVAL_MS = 250;
+const MUTATION_TTL_MS = 60_000;
+const MAX_MUTATION_IDS = 500;
 
 function emitWhiteboardError(socket, code, message, extra = {}) {
   socket.emit('whiteboard_error', { code, message, ...extra });
@@ -11,9 +13,31 @@ function normalizeRoomId(payload = {}) {
   return String(payload.roomId || payload.room_id || '').trim();
 }
 
+function normalizeMutationId(payload = {}) {
+  return String(payload.mutationId || payload.mutation_id || '').trim().slice(0, 160);
+}
+
+function shouldSkipDuplicateMutation(socket, roomId, mutationId) {
+  if (!mutationId) return false;
+  const now = Date.now();
+  socket.data.whiteboardMutationIds = socket.data.whiteboardMutationIds || new Map();
+
+  for (const [key, seenAt] of socket.data.whiteboardMutationIds.entries()) {
+    if (now - seenAt > MUTATION_TTL_MS || socket.data.whiteboardMutationIds.size > MAX_MUTATION_IDS) {
+      socket.data.whiteboardMutationIds.delete(key);
+    }
+  }
+
+  const key = `${roomId}:${mutationId}`;
+  if (socket.data.whiteboardMutationIds.has(key)) return true;
+  socket.data.whiteboardMutationIds.set(key, now);
+  return false;
+}
+
 function attachWhiteboardSocketHandlers({ io, socket }) {
   socket.data.whiteboardRooms = socket.data.whiteboardRooms || new Set();
   socket.data.whiteboardLastSyncAt = socket.data.whiteboardLastSyncAt || new Map();
+  socket.data.whiteboardMutationIds = socket.data.whiteboardMutationIds || new Map();
 
   socket.on('whiteboard:create_room', async (payload = {}) => {
     try {
@@ -83,7 +107,16 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
 
   socket.on('whiteboard:sync_canvas', async (payload = {}) => {
     const roomId = normalizeRoomId(payload);
+    const mutationId = normalizeMutationId(payload);
     try {
+      if (!roomId) {
+        emitWhiteboardError(socket, 'room_required', 'roomId is required');
+        return;
+      }
+      if (shouldSkipDuplicateMutation(socket, roomId, mutationId)) {
+        logger.debug('[BRAINSTORMING] duplicate whiteboard mutation skipped', { roomId, socketId: socket.id });
+        return;
+      }
       const now = Date.now();
       const last = socket.data.whiteboardLastSyncAt.get(roomId) || 0;
       if (now - last < MIN_SYNC_INTERVAL_MS) {
@@ -105,7 +138,7 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
       socket.to(`whiteboard:${roomId}`).emit('whiteboard:canvas_synced', {
         roomId,
         whiteboard,
-        mutationId: payload.mutationId || payload.mutation_id || null,
+        mutationId: mutationId || null,
         sourceSocketId: socket.id,
       });
     } catch (err) {
@@ -115,7 +148,13 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
 
   socket.on('whiteboard:clear_canvas', async (payload = {}) => {
     const roomId = normalizeRoomId(payload);
+    const mutationId = normalizeMutationId(payload);
     try {
+      if (!roomId) {
+        emitWhiteboardError(socket, 'room_required', 'roomId is required');
+        return;
+      }
+      if (shouldSkipDuplicateMutation(socket, roomId, mutationId)) return;
       const auth = await brainstormService.authorizeSocketRoomAccess(socket, roomId);
       if (!auth.ok) {
         emitWhiteboardError(socket, 'clear_forbidden', auth.error, { roomId, status: auth.status });
@@ -125,7 +164,7 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
       io.to(`whiteboard:${roomId}`).emit('whiteboard:canvas_cleared', {
         roomId,
         whiteboard,
-        mutationId: payload.mutationId || payload.mutation_id || null,
+        mutationId: mutationId || null,
         sourceSocketId: socket.id,
       });
     } catch (err) {
@@ -135,7 +174,13 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
 
   socket.on('whiteboard:add_sticky_note', async (payload = {}) => {
     const roomId = normalizeRoomId(payload);
+    const mutationId = normalizeMutationId(payload);
     try {
+      if (!roomId) {
+        emitWhiteboardError(socket, 'room_required', 'roomId is required');
+        return;
+      }
+      if (shouldSkipDuplicateMutation(socket, roomId, mutationId)) return;
       const auth = await brainstormService.authorizeSocketRoomAccess(socket, roomId);
       if (!auth.ok) {
         emitWhiteboardError(socket, 'note_forbidden', auth.error, { roomId, status: auth.status });
@@ -149,7 +194,7 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
       io.to(`whiteboard:${roomId}`).emit('whiteboard:sticky_note_added', {
         roomId,
         note,
-        mutationId: payload.mutationId || payload.mutation_id || null,
+        mutationId: mutationId || null,
         sourceSocketId: socket.id,
       });
     } catch (err) {
@@ -159,7 +204,13 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
 
   socket.on('whiteboard:add_connector', async (payload = {}) => {
     const roomId = normalizeRoomId(payload);
+    const mutationId = normalizeMutationId(payload);
     try {
+      if (!roomId) {
+        emitWhiteboardError(socket, 'room_required', 'roomId is required');
+        return;
+      }
+      if (shouldSkipDuplicateMutation(socket, roomId, mutationId)) return;
       const auth = await brainstormService.authorizeSocketRoomAccess(socket, roomId);
       if (!auth.ok) {
         emitWhiteboardError(socket, 'connector_forbidden', auth.error, { roomId, status: auth.status });
@@ -173,7 +224,7 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
       io.to(`whiteboard:${roomId}`).emit('whiteboard:connector_added', {
         roomId,
         connector,
-        mutationId: payload.mutationId || payload.mutation_id || null,
+        mutationId: mutationId || null,
         sourceSocketId: socket.id,
       });
     } catch (err) {
@@ -189,6 +240,9 @@ function attachWhiteboardSocketHandlers({ io, socket }) {
       brainstormService.markUserPresence({ roomId, userId, status: 'offline', socketId: socket.id }).catch(() => {});
       socket.to(`whiteboard:${roomId}`).emit('whiteboard:user_left', { roomId, userId, at: new Date().toISOString() });
     }
+    socket.data.whiteboardRooms.clear();
+    socket.data.whiteboardLastSyncAt.clear();
+    socket.data.whiteboardMutationIds.clear();
   });
 }
 

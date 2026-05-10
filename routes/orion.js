@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const { ensureAuthenticated } = require('../middleware/auth');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -8,6 +9,10 @@ const NVIDIA_API_URL = process.env.NVIDIA_API_URL || 'https://integrate.api.nvid
 const NVIDIA_API_KEY = process.env.ORION_API_KEY || process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY || '';
 const ORION_MODEL = normalizeNvidiaModel(process.env.ORION_MODEL || 'moonshotai/kimi-k2-instruct');
 const ORION_VISION_MODEL = normalizeNvidiaModel(process.env.ORION_VISION_MODEL || 'meta/llama-3.2-11b-vision-instruct');
+const MAX_QUERY_CHARS = Number(process.env.ORION_MAX_QUERY_CHARS || 12000);
+const MAX_DOCUMENT_CHARS = Number(process.env.ORION_MAX_DOCUMENT_CHARS || 60000);
+const MAX_IMAGES = Number(process.env.ORION_MAX_IMAGES || 4);
+const ORION_TIMEOUT_MS = Number(process.env.ORION_API_TIMEOUT_MS || 60000);
 
 function normalizeNvidiaModel(model) {
   const value = String(model || '').trim();
@@ -33,6 +38,40 @@ function parseNvidiaErrorBody(body) {
   }
 
   return body?.error?.message || body?.message || body?.detail || JSON.stringify(body);
+}
+
+function publicOrionError(message, code = 'orion_error', metadata = {}) {
+  return {
+    success: false,
+    ideas: [],
+    metadata: { code, ...metadata },
+    error: message,
+  };
+}
+
+function validateChatPayload(body = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, status: 400, code: 'invalid_payload', error: 'Request body must be a JSON object.' };
+  }
+
+  const query = typeof body.query === 'string' ? body.query.trim() : '';
+  const documentText = typeof body.documentText === 'string' ? body.documentText.trim() : '';
+  const images = Array.isArray(body.images) ? body.images.filter((image) => typeof image === 'string' && image.trim()) : [];
+
+  if (!query && !documentText && images.length === 0) {
+    return { ok: false, status: 400, code: 'query_required', error: 'Query or attachments required.' };
+  }
+  if (query.length > MAX_QUERY_CHARS) {
+    return { ok: false, status: 413, code: 'query_too_large', error: `Query must be ${MAX_QUERY_CHARS} characters or fewer.` };
+  }
+  if (documentText.length > MAX_DOCUMENT_CHARS) {
+    return { ok: false, status: 413, code: 'document_too_large', error: `Document text must be ${MAX_DOCUMENT_CHARS} characters or fewer.` };
+  }
+  if (images.length > MAX_IMAGES) {
+    return { ok: false, status: 413, code: 'too_many_images', error: `Attach ${MAX_IMAGES} images or fewer.` };
+  }
+
+  return { ok: true, query, documentText, images };
 }
 
 async function readStreamBody(stream) {
@@ -78,22 +117,28 @@ const SYSTEM_PROMPT = [
 ].join('\n');
 
 router.post('/chat', ensureAuthenticated, async (req, res) => {
-  const query = (req.body?.query || '').toString().trim();
-  const documentText = (req.body?.documentText || '').toString().trim();
-  const images = Array.isArray(req.body?.images) ? req.body.images : [];
+  const startedAt = Date.now();
+  const validated = validateChatPayload(req.body);
+  const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-  if (!query && !documentText && images.length === 0) {
-    return res.status(400).json({ success: false, error: 'Query or attachments required.' });
+  logger.info('[ORION API] request received', {
+    requestId,
+    hasQuery: Boolean(validated.query),
+    hasDocument: Boolean(validated.documentText),
+    imageCount: validated.images?.length || 0,
+  });
+
+  if (!validated.ok) {
+    return res.status(validated.status).json(publicOrionError(validated.error, validated.code, { requestId }));
   }
 
   if (!NVIDIA_API_KEY) {
-    return res.status(500).json({
-      success: false,
-      error: 'Orion API key is not configured.',
-    });
+    logger.error('[ORION ERROR] API key missing', { requestId });
+    return res.status(500).json(publicOrionError('Orion API key is not configured.', 'orion_not_configured', { requestId }));
   }
 
   try {
+    const { query, documentText, images } = validated;
     let finalQuery = query;
     if (documentText) {
       finalQuery = `${query}\n\n[USER PROVIDED DOCUMENT CONTENT:]\n${documentText}`;
@@ -111,6 +156,14 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
     } else {
       userContent = finalQuery;
     }
+
+    logger.debug('[ORION API] prompt', {
+      requestId,
+      model: finalModel,
+      promptChars: finalQuery.length,
+      imageCount: images.length,
+      prompt: finalQuery,
+    });
 
     const response = await axios.post(
       NVIDIA_API_URL,
@@ -131,25 +184,26 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
           'Content-Type': 'application/json',
         },
         responseType: 'stream', // AXIOS STREAM MODE
-        timeout: Number(process.env.ORION_API_TIMEOUT_MS || 60000),
+        timeout: ORION_TIMEOUT_MS,
         validateStatus: () => true,
       }
     );
 
     if (response.status < 200 || response.status >= 300) {
       const upstreamDetails = await readStreamBody(response.data);
-      console.error('[ORION] NVIDIA API error:', {
+      logger.error('[ORION ERROR] provider failure', {
+        requestId,
         status: response.status,
         model: finalModel,
         details: upstreamDetails,
+        responseTimeMs: Date.now() - startedAt,
       });
 
-      return res.status(502).json({
-        success: false,
-        error: 'Orion failed to respond from NVIDIA.',
-        details: upstreamDetails || `NVIDIA returned HTTP ${response.status}`,
+      return res.status(502).json(publicOrionError('Orion failed to respond from NVIDIA.', 'provider_failure', {
+        requestId,
         model: finalModel,
-      });
+        providerStatus: response.status,
+      }));
     }
 
     // Set headers only after NVIDIA accepts the request, so JSON errors stay readable.
@@ -159,6 +213,17 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
 
     // Pipe the stream from NVIDIA to the client
     let streamBuffer = '';
+    let chunkCount = 0;
+    let streamClosed = false;
+    const closeUpstream = () => {
+      if (streamClosed) return;
+      streamClosed = true;
+      if (response.data && typeof response.data.destroy === 'function') {
+        response.data.destroy();
+      }
+    };
+    res.on('close', closeUpstream);
+
     response.data.on('data', (chunk) => {
       streamBuffer += chunk.toString();
       const lines = streamBuffer.split('\n');
@@ -177,45 +242,63 @@ router.post('/chat', ensureAuthenticated, async (req, res) => {
             const parsed = JSON.parse(data);
             const content = parsed.choices?.[0]?.delta?.content || '';
             if (content) {
+              chunkCount += 1;
               res.write(`data: ${JSON.stringify({ content, model: finalModel })}\n\n`);
             }
           } catch (e) {
-            console.warn('[ORION] Skipped malformed stream chunk:', e.message);
+            logger.warn('[ORION RESPONSE] skipped malformed stream chunk', { requestId, message: e.message });
           }
         }
       }
     });
 
     response.data.on('end', () => {
+      res.off('close', closeUpstream);
+      streamClosed = true;
+      logger.info('[ORION RESPONSE] stream completed', {
+        requestId,
+        model: finalModel,
+        chunkCount,
+        responseTimeMs: Date.now() - startedAt,
+      });
       res.end();
     });
 
     response.data.on('error', (err) => {
-      console.error('[ORION] Stream error:', err);
-      res.write(`data: ${JSON.stringify({ error: 'Stream interrupted' })}\n\n`);
+      res.off('close', closeUpstream);
+      streamClosed = true;
+      logger.error('[ORION ERROR] stream error', {
+        requestId,
+        message: err.message,
+        responseTimeMs: Date.now() - startedAt,
+      });
+      res.write(`data: ${JSON.stringify({ error: 'Stream interrupted', code: 'stream_interrupted' })}\n\n`);
       res.end();
     });
 
   } catch (error) {
     const responseBody = await readStreamBody(error?.response?.data);
-    const details = responseBody || error.message || 'Unknown error';
-    console.error('[ORION] API error:', {
+    const timedOut = error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '');
+    const code = timedOut ? 'ai_timeout' : 'orion_error';
+    logger.error('[ORION ERROR] API error', {
+      requestId,
       status: error?.response?.status,
-      details,
+      code,
+      details: responseBody || error.message || 'Unknown error',
+      responseTimeMs: Date.now() - startedAt,
     });
     
     // If headers already sent, we must send the error inside the stream
     if (res.headersSent) {
-      res.write(`data: ${JSON.stringify({ error: 'Orion failed to respond during stream.' })}\n\n`);
+      res.write(`data: ${JSON.stringify({ error: 'Orion failed to respond during stream.', code })}\n\n`);
       return res.end();
     }
 
-    return res.status(502).json({
-      success: false,
-      error: 'Orion failed to respond. Please try again.',
-      details,
-      model: ORION_MODEL,
-    });
+    return res.status(timedOut ? 504 : 502).json(publicOrionError(
+      timedOut ? 'Orion timed out. Please try again.' : 'Orion failed to respond. Please try again.',
+      code,
+      { requestId, model: ORION_MODEL }
+    ));
   }
 });
 

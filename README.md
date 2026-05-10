@@ -1,1540 +1,843 @@
-﻿# CloudIQ Backend
+# CloudIQ Backend
 
-Production-ready Express backend for CloudIQ: authentication, communities, realtime discussions, brainstorming, Orion AI, Firebase persistence, Cloudinary media, GitHub OAuth, and GitHub Codespaces-powered labs.
+CloudIQ Backend is the Express, Socket.IO, IBM App ID, Cloudant, Firebase, Cloudinary, NVIDIA Orion, and GitHub Codespaces API layer for the CloudIQ learning platform.
 
-## Table of Contents
+It owns authentication, user sessions, communities, realtime discussions, uploads, tutorials, posts, friends, notifications, collaborative brainstorming, AI generation, voice transcription, GitHub OAuth, and temporary Codespaces lab sessions.
 
-- [1. Project Overview](#1-project-overview)
-- [2. Core Features](#2-core-features)
-- [3. Backend Architecture](#3-backend-architecture)
-- [4. Installation Guide](#4-installation-guide)
-- [5. Environment Variables](#5-environment-variables)
-- [6. Firebase Admin Setup](#6-firebase-admin-setup)
-- [7. Cloudinary Media System](#7-cloudinary-media-system)
-- [8. GitHub Integration](#8-github-integration)
-- [9. Orion AI System](#9-orion-ai-system)
-- [10. Socket.IO](#10-socketio)
-- [11. Deployment Guide](#11-deployment-guide)
-- [12. Security](#12-security)
-- [13. Performance Optimization](#13-performance-optimization)
-- [14. Troubleshooting](#14-troubleshooting)
-- [15. API Documentation](#15-api-documentation)
-- [16. Contributing Guide](#16-contributing-guide)
+## Contents
 
----
+- [Overview](#overview)
+- [Tech Stack](#tech-stack)
+- [Architecture](#architecture)
+- [Repository Structure](#repository-structure)
+- [Local Setup](#local-setup)
+- [Environment Variables](#environment-variables)
+- [Authentication](#authentication)
+- [Data Stores](#data-stores)
+- [Media Uploads](#media-uploads)
+- [GitHub Codespaces Labs](#github-codespaces-labs)
+- [Orion AI](#orion-ai)
+- [Socket.IO](#socketio)
+- [API Reference](#api-reference)
+- [Frontend Integration Notes](#frontend-integration-notes)
+- [Operations](#operations)
+- [Troubleshooting](#troubleshooting)
+- [Security Notes](#security-notes)
 
-## 1. Project Overview
+## Overview
 
-CloudIQ Backend is the API and realtime server for the CloudIQ learning platform. It connects the frontend to authentication, community data, media uploads, Firebase persistence, Orion AI, GitHub repository workflows, and GitHub Codespaces lab environments.
+The backend exposes REST APIs for normal request/response workflows and Socket.IO events for realtime collaboration.
 
-The backend is designed around a practical split:
+Primary responsibilities:
 
-- **REST APIs** handle authenticated CRUD workflows, media uploads, labs, communities, tutorials, posts, and AI generation.
-- **Socket.IO** handles realtime events for discussions, typing indicators, presence, whiteboard updates, and post/community notifications.
-- **Firebase Admin** persists realtime discussion data, brainstorm room metadata, lab sessions, and whiteboard state.
-- **Cloudinary** stores images, videos, raw discussion attachments, post media, tutorial media, and user profile images.
-- **GitHub OAuth and Codespaces APIs** connect user GitHub accounts, list repositories, and launch cloud lab environments.
-- **Orion AI** powers chat and the CloudIQ Brainstorming experience with frontend-safe structured JSON responses.
-
-### High-Level System Diagram
-
-```text
-                         +----------------------+
-                         |   CloudIQ Frontend   |
-                         | React / Vite / SPA   |
-                         +----------+-----------+
-                                    |
-                    HTTPS REST + Cookie Sessions + Socket.IO
-                                    |
-                         +----------v-----------+
-                         |   CloudIQ Backend    |
-                         | Node.js + Express    |
-                         +----------+-----------+
-                                    |
-       +----------------------------+-----------------------------+
-       |                            |                             |
-+------v-------+            +-------v------+              +-------v------+
-| Firebase     |            | Cloudinary   |              | GitHub APIs  |
-| Firestore    |            | Media CDN    |              | OAuth/Repos  |
-| RTDB         |            | Uploads      |              | Codespaces   |
-+------+-------+            +-------+------+              +------+-------+
-       |                            |                            |
-       +----------------------------+----------------------------+
-                                    |
-                         +----------v-----------+
-                         | Orion / NVIDIA NIM   |
-                         | AI Chat + Brainstorm |
-                         +----------------------+
-```
-
-### Main Responsibilities
-
-| Area | What the backend does |
+| Area | Responsibility |
 | --- | --- |
-| Auth | IBM App ID login/logout, sessions, role checks, admin access |
-| Communities | Create, update, join, leave, request, approve, and reject community access |
-| Discussions | Channels, messages, media, reactions, unread state, pinning, realtime delivery |
-| Brainstorming | Rooms, whiteboard sync, notes, connectors, Orion AI idea generation |
-| Labs | GitHub repository validation, Codespaces creation/deletion, lab sessions |
-| Media | Profile images, posts, tutorials, discussion uploads, videos, cleanup |
-| AI | Orion chat streaming and structured brainstorming generation |
-| Realtime | Socket.IO presence, typing, posts, discussions, and whiteboard events |
+| Auth | IBM App ID login, callback, logout, session checks, role/admin checks |
+| Users | Profile, dashboard, onboarding, courses, account deletion |
+| Communities | Create, update, join, leave, membership requests, approvals, owner/admin access |
+| Discussions | Channels, messages, uploads, reactions, read state, pinning, realtime delivery |
+| Posts | Feed posts, media uploads, likes, deletion |
+| Tutorials | Tutorial creation, media handling, listing, updates, deletion |
+| Friends | Discovery, requests, accept/reject, removal, list |
+| Notifications | User notifications and read state |
+| Brainstorming | Rooms, whiteboard state, notes, connectors, AI-generated ideas |
+| Labs | GitHub OAuth, repo listing, Codespaces creation/deletion, active-lab lock handling |
+| AI | Orion/NVIDIA NIM chat and brainstorming generation |
+| Voice | IBM Watson Speech to Text transcription |
+| Observability | Health check, startup route summary, env-driven logs, Firestore debug route |
 
----
+## Tech Stack
 
-## 2. Core Features
+| Layer | Technology |
+| --- | --- |
+| Runtime | Node.js, Express |
+| Realtime | Socket.IO |
+| Auth | IBM App ID, Passport, express-session |
+| Primary document store | IBM Cloudant |
+| Realtime/discussion/lab metadata | Firebase Admin SDK, Firestore, Firebase Realtime Database |
+| Media | Cloudinary, multer memory storage |
+| AI | NVIDIA NIM-compatible Orion calls |
+| Labs | GitHub OAuth, GitHub REST API, Codespaces API |
+| Voice | IBM Watson Speech to Text |
+| Logging | `utils/logger.js` with `debug`, `info`, `warn`, `error` levels |
 
-### Orion AI APIs
-
-- Streaming Orion chat through `/api/orion/chat`.
-- NVIDIA NIM-compatible provider support.
-- Structured Brainstorming generation through `/api/brainstorm/ai/generate`.
-- Safe JSON responses for frontend rendering.
-- Timeout handling, provider failure handling, scoped logging, and prompt validation.
-
-### Brainstorming APIs
-
-- Create and manage brainstorm rooms.
-- Join and leave collaborative rooms.
-- Persist whiteboard state in Firebase Realtime Database.
-- Store room metadata and AI generations in Firestore.
-- Generate one optimized structured idea at a time for fast UI previews.
-- Add sticky notes and connectors.
-
-### Realtime Discussions
-
-- Community channel list.
-- Channel creation and deletion.
-- Message history.
-- Media messages.
-- Typing indicators.
-- Presence updates.
-- Reactions, unread state, and pinned messages.
-- Explicit socket errors instead of silent failures.
-
-### Firebase Persistence
-
-- Firestore stores discussions, messages, channels, brainstorm sessions, AI generations, labs, lab sessions, presence, reactions, unread states, and metadata.
-- Realtime Database stores live whiteboard state for Brainstorming rooms.
-- Admin SDK singleton initialization prevents duplicate app initialization.
-
-### Cloudinary Media Uploads
-
-- Buffer-only uploads using `multer.memoryStorage`.
-- Image, video, and raw file support.
-- Discussion attachments organized by community/channel.
-- Tutorial media uploads and cleanup.
-- Post media uploads and cleanup.
-- Profile image uploads and cleanup.
-
-### GitHub OAuth and Repository APIs
-
-- GitHub OAuth connection per authenticated user.
-- Repository listing for public and private repositories.
-- Access-token-backed GitHub API requests.
-- Handles organization access restrictions, SSO/SAML restrictions, and rate limits.
-
-### Codespaces Management
-
-- Launch GitHub Codespaces from repository URLs.
-- Validate repository URL, branch/ref, owner, and repo.
-- Store lab state and sessions.
-- Delete Codespaces and clean up active lab locks.
-- Supports custom display names for labs.
-
-### Socket.IO Realtime Events
-
-- User socket registration.
-- Duplicate socket prevention.
-- Discussion channel joins and message delivery.
-- Typing start/stop.
-- Whiteboard room join/leave/sync/clear.
-- Sticky note and connector events.
-- Presence updates and disconnect cleanup.
-
-### Labs System
-
-- Create cloud lab sessions.
-- Track active, expired, and deleted labs.
-- Cleanup expired lab sessions.
-- Release active lock/session state after delete.
-- Surface GitHub/Codespaces errors with frontend-safe JSON.
-
-### Community APIs
-
-- Public and private communities.
-- Membership requests.
-- Owner/admin approval workflows.
-- Member access checks.
-- Notifications on requests and approvals.
-
----
-
-## 3. Backend Architecture
-
-### Request Lifecycle
+## Architecture
 
 ```text
-Client Request
-    |
-    v
-Express Middleware
-    |-- helmet
-    |-- cors
-    |-- express.json/urlencoded
-    |-- session
-    |-- passport
-    |-- auth guards
-    v
-Route Handler
-    |
-    v
-Service Layer
-    |-- Firebase Admin
-    |-- Cloudinary
-    |-- Cloudant
-    |-- GitHub API
-    |-- Orion AI
-    v
-Safe JSON Response / Socket.IO Event
+CloudIQ Frontend
+      |
+      | HTTPS REST, session cookies, Socket.IO
+      v
+CloudIQ Backend
+      |
+      |-- Express routes
+      |-- Passport sessions
+      |-- Socket.IO handlers
+      |-- Service modules
+      |
+      +--> IBM App ID
+      +--> IBM Cloudant
+      +--> Firebase Admin / Firestore / RTDB
+      +--> Cloudinary
+      +--> GitHub OAuth + Codespaces API
+      +--> NVIDIA NIM / Orion
+      +--> IBM Watson STT
 ```
 
-### Folder Structure
+Request lifecycle:
+
+```text
+Client request
+  -> helmet
+  -> CORS
+  -> JSON/form body parsing
+  -> session
+  -> Passport
+  -> route-level auth guard
+  -> route handler
+  -> service integration
+  -> frontend-safe JSON response
+```
+
+Socket lifecycle:
+
+```text
+Client connects
+  -> register user socket
+  -> optional discussion/whiteboard room joins
+  -> authorization check
+  -> realtime events
+  -> presence/typing/read-state cleanup on disconnect
+```
+
+## Repository Structure
 
 ```text
 cloudiq-backend/
-|-- server.js                         # Express app, Socket.IO server, route mounts
-|-- package.json                      # Scripts and dependencies
+|-- server.js                         # Express app, HTTP server, Socket.IO, route mounts
+|-- package.json                      # Runtime scripts and dependencies
+|-- .env.example                      # Environment variable template
+|-- DISCUSSION_PANEL_README.md        # Frontend discussion/media handoff contract
+|-- firestore.indexes.json            # Firestore indexes for deployment
 |-- config/
-|   |-- appid.js                      # IBM App ID configuration helper
-|   `-- session.js                    # Express session configuration
+|   |-- appid.js                      # IBM App ID config helpers
+|   |-- env.js                        # URL/CORS/env validation helpers
+|   `-- session.js                    # Session config helper
 |-- middleware/
-|   |-- auth.js                       # Session/auth helpers and role checks
+|   |-- auth.js                       # Session auth, user identity, admin helpers
 |   |-- authMiddleware.js             # Additional auth middleware
-|   `-- githubAuth.js                 # GitHub OAuth middleware
+|   `-- githubAuth.js                 # GitHub OAuth guards/session helpers
 |-- routes/
-|   |-- admin.js                      # Admin dashboard/admin management APIs
+|   |-- admin.js                      # Admin dashboard/admin management
 |   |-- auth.js                       # IBM App ID auth routes
-|   |-- brainstorm.js                 # Brainstorm rooms, whiteboard REST, Orion generation
+|   |-- brainstorm.js                 # Brainstorm rooms and AI endpoints
 |   |-- comments.js                   # Post comments
-|   |-- community.js                  # Communities, joins, requests, approvals
-|   |-- discussions.js                # Channels, messages, media, reactions, unreads
+|   |-- community.js                  # Communities and membership workflows
+|   |-- discussions.js                # Discussion REST API and media uploads
 |   |-- friends.js                    # Friend discovery and requests
-|   |-- githubAuth.js                 # GitHub OAuth and repo listing
-|   |-- labs.js                       # GitHub Codespaces lab lifecycle
-|   |-- notifications.js              # User notifications
-|   |-- orion.js                      # Orion streaming chat
+|   |-- githubAuth.js                 # GitHub OAuth, status, repos, logout
+|   |-- labs.js                       # Codespaces lab lifecycle
+|   |-- notifications.js              # Notifications
+|   |-- orion.js                      # Orion/NVIDIA chat API
 |   |-- posts.js                      # Feed posts and media
-|   |-- tutorials.js                  # Tutorial CRUD and tutorial media
-|   |-- user.js                       # Profile, dashboard, onboarding, account
-|   `-- voice.js                      # IBM Watson speech-to-text
+|   |-- tutorials.js                  # Tutorials and tutorial media
+|   |-- user.js                       # User profile/dashboard/onboarding
+|   `-- voice.js                      # Watson speech transcription
 |-- services/
-|   |-- adminDb.js                    # Admin role persistence
-|   |-- brainstormService.js          # Brainstorm room and Orion AI business logic
-|   |-- cacheService.js               # In-memory caches
-|   |-- cloudantClient.js             # IBM Cloudant client wrapper
-|   |-- cloudinaryService.js          # Buffer-only Cloudinary uploads and cleanup
-|   |-- firebaseService.js            # Firebase Admin, Firestore, Realtime Database
-|   |-- githubCodespacesService.js    # GitHub repo and Codespaces API logic
-|   |-- labCleanupService.js          # Expired lab cleanup job
+|   |-- adminDb.js                    # Admin persistence helpers
+|   |-- brainstormService.js          # Brainstorm room/AI service logic
+|   |-- cacheService.js               # Cache helpers
+|   |-- cloudantClient.js             # Cloudant client, DB setup, design docs
+|   |-- cloudinaryService.js          # Buffer-only Cloudinary uploads/deletes
+|   |-- firebaseService.js            # Firebase Admin, Firestore, RTDB helpers
+|   |-- githubCodespacesService.js    # GitHub repo/Codespaces/token helpers
+|   |-- labCleanupService.js          # Scheduled lab expiration cleanup
 |   |-- mediaService.js               # Media helpers
-|   |-- notificationService.js        # Notifications
-|   `-- statsService.js               # Realtime stats broadcaster
+|   |-- notificationService.js        # Notification helpers
+|   `-- statsService.js               # Stats helpers
 |-- sockets/
-|   |-- discussions.js                # Discussion Socket.IO handlers
-|   `-- whiteboard.js                 # Brainstorm whiteboard Socket.IO handlers
+|   |-- discussions.js                # Discussion Socket.IO events
+|   `-- whiteboard.js                 # Brainstorm whiteboard Socket.IO events
 |-- utils/
-|   |-- db.js                         # Cloudant/user helper utilities
-|   `-- logger.js                     # Level-based structured logging and redaction
-`-- firestore.indexes.json            # Firestore indexes
+|   |-- db.js                         # User/admin DB helpers
+|   `-- logger.js                     # Env-driven logging and redaction
+`-- data/
+    `-- users.json                    # Local/user data fallback file
 ```
 
-### Architecture Layers
-
-| Layer | Responsibility |
-| --- | --- |
-| `server.js` | App bootstrap, middleware, sessions, Socket.IO, global route mounts |
-| `routes/*` | HTTP input validation, auth checks, REST response shaping |
-| `services/*` | Business logic and third-party API boundaries |
-| `middleware/*` | Auth, role, session, OAuth helpers |
-| `sockets/*` | Realtime event handling and socket authorization |
-| `utils/*` | Shared database and logging utilities |
-
----
-
-## 4. Installation Guide
+## Local Setup
 
 ### Prerequisites
 
-- Node.js 20 LTS recommended
-- npm 10+
-- Firebase project with a service account
-- Cloudinary account
-- IBM App ID service
-- IBM Cloudant instance
-- GitHub OAuth app
-- GitHub account with Codespaces access
-- Orion/NVIDIA API key
+- Node.js 20 LTS recommended.
+- npm.
+- IBM Cloudant credentials.
+- IBM App ID application.
+- Firebase project with a service account.
+- Cloudinary account.
+- NVIDIA API key for Orion/NIM calls.
+- GitHub OAuth app for Labs.
+- Optional: IBM Watson Speech to Text credentials.
 
-### Clone the Repository
-
-```bash
-git clone <your-repository-url>
-cd ibm_backend
-```
-
-### Install Dependencies
+### Install
 
 ```bash
 npm install
 ```
 
-### Create Environment File
+### Configure
 
-Create a `.env` file in the project root:
+Create a local `.env` from `.env.example`:
 
 ```bash
 cp .env.example .env
 ```
 
-If `.env.example` does not exist, create `.env` manually using the environment table below.
+On Windows PowerShell:
 
-### Run in Development
+```powershell
+Copy-Item .env.example .env
+```
+
+Fill in real values in `.env`. Do not commit `.env` or real credentials.
+
+### Run
 
 ```bash
 npm run dev
 ```
 
-### Run in Production Mode
+Production-style start:
 
 ```bash
 npm start
 ```
 
-### Health Check
+Default port:
 
-```bash
-curl <BACKEND_URL>/
-curl <BACKEND_URL>/api/health
+```text
+http://localhost:5000
 ```
 
-Expected root response:
+Health check:
 
-```json
-{
-  "success": true,
-  "message": "CloudIQ backend running"
-}
+```text
+GET /api/health
 ```
 
-Expected API health response:
+## Environment Variables
 
-```json
-{
-  "success": true,
-  "status": "healthy"
-}
+### Server
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `NODE_ENV` | Yes | `development` or `production` |
+| `PORT` | Yes | Defaults to `5000` if unset |
+| `LOG_LEVEL` | Recommended | `debug`, `info`, `warn`, or `error`; production default is `info` |
+| `FRONTEND_URL` | Production | First frontend origin, for redirects and CORS |
+| `BACKEND_URL` | Production | Public backend origin, used for OAuth callback construction |
+| `CORS_ALLOWED_ORIGINS` | Production | Comma-separated extra origins |
+| `SESSION_SECRET` | Yes | Strong secret for express-session |
+| `JSON_BODY_LIMIT` | Optional | Defaults to `1mb` |
+| `FORM_BODY_LIMIT` | Optional | Defaults to `1mb` |
+
+### IBM App ID
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `APPID_TENANT_ID` | Yes | IBM App ID tenant ID |
+| `APPID_CLIENT_ID` | Yes | App ID client ID |
+| `APPID_SECRET` | Yes | App ID secret |
+| `APPID_OAUTH_SERVER_URL` | Yes | App ID OAuth server URL |
+| `APPID_REDIRECT_URI` | Yes | Must exactly match the App ID dashboard callback |
+| `APPID_DISCOVERY_ENDPOINT` | Optional | Discovery endpoint |
+| `APPID_PROFILES_URL` | Optional | Profiles base URL |
+| `APPID_MANAGEMENT_URL` | Optional | Management API URL |
+| `APPID_API_KEY` | Optional | Management API key |
+| `ADMIN_ROLE_ID` | Optional | App ID role ID |
+| `ADMIN_ROLE_NAME` | Optional | Defaults to `admin` |
+| `ADMIN_EMAILS` | Optional | Comma-separated super-admin emails |
+
+Expected backend callback:
+
+```text
+{BACKEND_URL}/api/auth/callback
 ```
-
----
-
-## 5. Environment Variables
-
-Use a real `.env` file locally and secure environment variables in production.
-
-### Server and Runtime
-
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `NODE_ENV` | Recommended | `development` or `production` | Controls secure cookies, debug behavior, and stack trace exposure. |
-| `PORT` | No | `5000` | Backend port. Defaults to `5000`. |
-| `FRONTEND_URL` | Yes | `<FRONTEND_URL>` | Frontend origin for CORS and auth redirects. |
-| `BACKEND_URL` | Recommended | `https://api.example.com` | Public backend URL used by GitHub OAuth callback helpers. |
-| `SESSION_SECRET` | Yes | `change-me-long-random-secret` | Express session signing secret. Use a long random value in production. |
-| `LOG_LEVEL` | No | `info` | Logging level: `debug`, `info`, `warn`, or `error`. |
-| `JSON_BODY_LIMIT` | No | `1mb` | Express JSON body limit. |
-| `FORM_BODY_LIMIT` | No | `1mb` | URL-encoded body limit. |
-
-### IBM App ID Authentication
-
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `APPID_TENANT_ID` | Yes | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` | IBM App ID tenant ID. |
-| `APPID_CLIENT_ID` | Yes | `client-id` | IBM App ID client ID. |
-| `APPID_SECRET` | Yes | `client-secret` | IBM App ID client secret. |
-| `APPID_OAUTH_SERVER_URL` | Yes | `https://...appid.cloud.ibm.com/oauth/v4/...` | IBM App ID OAuth server URL. |
-| `APPID_REDIRECT_URI` | Yes | `<BACKEND_URL>/api/auth/callback` | Redirect URI configured in IBM App ID. Use `/auth/callback` only for older deployments that intentionally use the legacy alias. |
-| `ADMIN_ROLE_NAME` | No | `admin` | Role name used for admin detection in some auth paths. |
-| `ADMIN_EMAILS` | Recommended | `admin@example.com,owner@example.com` | Super admin email allowlist. |
-
-### IBM Watson
-
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `WATSON_STT_API_KEY` | Required for voice | `watson-key` | IBM Watson Speech-to-Text API key. |
-| `WATSON_STT_URL` | Required for voice | `https://api.us-south.speech-to-text.watson.cloud.ibm.com` | IBM Watson Speech-to-Text service URL. |
-| `IBM_API_KEY` | Optional | `ibm-cloud-api-key` | Optional general IBM Cloud API key if future IBM services require it. Current voice code uses `WATSON_STT_API_KEY`. |
-
-### Firebase Admin
-
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `FIREBASE_PROJECT_ID` | Yes | `cloudiq-prod` | Firebase project ID. |
-| `FIREBASE_CLIENT_EMAIL` | Yes | `firebase-adminsdk-...@cloudiq-prod.iam.gserviceaccount.com` | Service account client email. |
-| `FIREBASE_PRIVATE_KEY` | Yes | `"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"` | Service account private key. Keep quotes and escaped newlines in `.env`. |
-| `FIREBASE_DATABASE_URL` | Recommended | `https://cloudiq-prod-default-rtdb.firebaseio.com` | Realtime Database URL for whiteboard sync. |
-| `VITE_FIREBASE_DATABASE_URL` | Optional fallback | `https://cloudiq-prod-default-rtdb.firebaseio.com` | Backward-compatible fallback for database URL. |
-| `FIRESTORE_DEBUG_ROUTE_ENABLED` | No | `true` | Enables `/api/debug/firestore` in production when set to `true`. |
-
-### Cloudinary
-
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `CLOUDINARY_CLOUD_NAME` | Yes | `cloudiq` | Cloudinary cloud name. |
-| `CLOUDINARY_API_KEY` | Yes | `1234567890` | Cloudinary API key. |
-| `CLOUDINARY_API_SECRET` | Yes | `cloudinary-secret` | Cloudinary API secret. |
-
-### GitHub OAuth and Codespaces
-
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `GITHUB_CLIENT_ID` | Required for GitHub OAuth | `github-oauth-client-id` | GitHub OAuth app client ID. |
-| `GITHUB_CLIENT_SECRET` | Required for GitHub OAuth | `github-oauth-secret` | GitHub OAuth app client secret. |
-| `GITHUB_CALLBACK_URL` | Recommended | `<BACKEND_URL>/api/github/callback` | GitHub OAuth callback URL. |
-| `GITHUB_API_VERSION` | No | `2026-03-10` | GitHub REST API version header. |
-| `LAB_TOKEN_ENCRYPTION_KEY` | Recommended | `32-byte-secret` | Secret used to encrypt lab/GitHub token data. Falls back to `SESSION_SECRET`. |
-| `LAB_TTL_MINUTES` | No | `120` | Default active lab lifetime before cleanup. |
 
 ### Cloudant
 
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `CLOUDANT_APIKEY` | Yes | `cloudant-api-key` | IBM Cloudant API key. |
-| `CLOUDANT_URL` | Yes | `https://...cloudantnosqldb.appdomain.cloud` | IBM Cloudant service URL. |
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `CLOUDANT_APIKEY` | Yes | IBM Cloudant IAM API key |
+| `CLOUDANT_URL` | Yes | Cloudant service URL |
 
-### Orion AI / NVIDIA NIM
+The Cloudant service initializes required databases and design documents on startup.
 
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `ORION_API_KEY` | Required for Orion | `nvapi-...` | Primary Orion/NVIDIA API key. |
-| `NVIDIA_API_KEY` | Optional fallback | `nvapi-...` | Alternative API key variable. |
-| `NVIDIA_NIM_API_KEY` | Optional fallback | `nvapi-...` | Alternative NVIDIA NIM API key variable. |
-| `NVIDIA_API_URL` | No | `https://integrate.api.nvidia.com/v1/chat/completions` | Chat completions endpoint. |
-| `ORION_MODEL` | No | `moonshotai/kimi-k2-instruct` | Text model for Orion chat and brainstorming. |
-| `ORION_VISION_MODEL` | No | `meta/llama-3.2-11b-vision-instruct` | Vision-capable Orion chat model. |
-| `ORION_API_TIMEOUT_MS` | No | `60000` | Provider request timeout in milliseconds. |
-| `ORION_MAX_QUERY_CHARS` | No | `12000` | Max chat query length. |
-| `ORION_MAX_DOCUMENT_CHARS` | No | `60000` | Max document text length for Orion chat. |
-| `ORION_MAX_IMAGES` | No | `4` | Max images accepted by Orion chat. |
-| `ORION_BRAINSTORM_PROMPT_CHARS` | No | `1800` | Prompt length sent to brainstorming Orion generation. |
-| `ORION_BRAINSTORM_MAX_TOKENS` | No | `900` | Max provider tokens for brainstorming generation. |
+### Firebase
 
-### Example `.env`
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `FIREBASE_PROJECT_ID` | Yes | Firebase project ID |
+| `FIREBASE_CLIENT_EMAIL` | Yes | Service account client email |
+| `FIREBASE_PRIVATE_KEY` | Yes | Private key with escaped newlines |
+| `FIREBASE_DATABASE_URL` | Recommended | RTDB URL |
+| `VITE_FIREBASE_DATABASE_URL` | Backward compatible | Used only as fallback by backend |
+| `FIRESTORE_DEBUG_ROUTE_ENABLED` | Optional | Set `true` to allow `/api/debug/firestore` in production |
+
+Use this format for private keys:
+
+```env
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+```
+
+### Cloudinary
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `CLOUDINARY_CLOUD_NAME` | Yes | Cloudinary cloud name |
+| `CLOUDINARY_API_KEY` | Yes | Cloudinary API key |
+| `CLOUDINARY_API_SECRET` | Yes | Cloudinary API secret |
+
+### GitHub OAuth and Codespaces
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `GITHUB_CLIENT_ID` | Yes | GitHub OAuth app client ID |
+| `GITHUB_CLIENT_SECRET` | Yes | GitHub OAuth app secret |
+| `GITHUB_CALLBACK_URL` | Recommended | Defaults to `{BACKEND_URL}/api/github/callback` |
+| `GITHUB_API_VERSION` | Optional | Defaults to `2026-03-10` |
+| `LAB_TTL_MINUTES` | Optional | Defaults to `30` |
+| `LAB_TOKEN_ENCRYPTION_KEY` | Production | Used for encrypted lab token/session support |
+
+Expected GitHub callback:
+
+```text
+{BACKEND_URL}/api/github/callback
+```
+
+GitHub OAuth scopes:
+
+```text
+codespace repo read:user
+```
+
+### Orion / NVIDIA NIM
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `ORION_API_KEY` | Yes | Preferred NVIDIA/NIM key variable |
+| `NVIDIA_API_KEY` | Fallback | Used if `ORION_API_KEY` is missing |
+| `NVIDIA_NIM_API_KEY` | Fallback | Used if both above are missing |
+| `NVIDIA_API_URL` | Optional | Defaults to NVIDIA chat completions endpoint |
+| `ORION_MODEL` | Recommended | Default `moonshotai/kimi-k2-instruct` |
+| `ORION_VISION_MODEL` | Optional | Default `meta/llama-3.2-11b-vision-instruct` |
+| `ORION_API_TIMEOUT_MS` | Optional | Default `60000` |
+| `ORION_MAX_QUERY_CHARS` | Optional | Chat input guard |
+| `ORION_MAX_DOCUMENT_CHARS` | Optional | Document input guard |
+| `ORION_MAX_IMAGES` | Optional | Image count guard |
+| `ORION_BRAINSTORM_PROMPT_CHARS` | Optional | Default `1800` |
+| `ORION_BRAINSTORM_MAX_TOKENS` | Optional | Default `900` |
+
+### IBM Watson STT
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `WATSON_STT_API_KEY` | For voice route | Watson Speech to Text API key |
+| `WATSON_STT_URL` | For voice route | Watson Speech to Text service URL |
+
+### Safe `.env` Skeleton
 
 ```env
 NODE_ENV=development
 PORT=5000
-FRONTEND_URL=<FRONTEND_URL>
-BACKEND_URL=<BACKEND_URL>
-SESSION_SECRET=replace-with-a-long-random-secret
 LOG_LEVEL=debug
+FRONTEND_URL=http://localhost:5173
+BACKEND_URL=http://localhost:5000
+CORS_ALLOWED_ORIGINS=http://localhost:5173
+SESSION_SECRET=replace-with-a-strong-local-secret
 
-APPID_TENANT_ID=
-APPID_CLIENT_ID=
-APPID_SECRET=
-APPID_OAUTH_SERVER_URL=
-APPID_REDIRECT_URI=<BACKEND_URL>/api/auth/callback
+CLOUDANT_APIKEY=replace-me
+CLOUDANT_URL=https://replace-me.cloudantnosqldb.appdomain.cloud
+
+APPID_TENANT_ID=replace-me
+APPID_CLIENT_ID=replace-me
+APPID_SECRET=replace-me
+APPID_OAUTH_SERVER_URL=https://region.appid.cloud.ibm.com/oauth/v4/tenant-id
+APPID_REDIRECT_URI=http://localhost:5000/api/auth/callback
+ADMIN_ROLE_NAME=admin
 ADMIN_EMAILS=admin@example.com
 
-FIREBASE_PROJECT_ID=
-FIREBASE_CLIENT_EMAIL=
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-FIREBASE_DATABASE_URL=
+FIREBASE_PROJECT_ID=replace-me
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk@example.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nreplace-me\n-----END PRIVATE KEY-----\n"
+FIREBASE_DATABASE_URL=https://project-id-default-rtdb.firebaseio.com
 
-CLOUDINARY_CLOUD_NAME=
-CLOUDINARY_API_KEY=
-CLOUDINARY_API_SECRET=
+CLOUDINARY_CLOUD_NAME=replace-me
+CLOUDINARY_API_KEY=replace-me
+CLOUDINARY_API_SECRET=replace-me
 
-CLOUDANT_APIKEY=
-CLOUDANT_URL=
-
-GITHUB_CLIENT_ID=
-GITHUB_CLIENT_SECRET=
-GITHUB_CALLBACK_URL=<BACKEND_URL>/api/github/callback
+GITHUB_CLIENT_ID=replace-me
+GITHUB_CLIENT_SECRET=replace-me
+GITHUB_CALLBACK_URL=http://localhost:5000/api/github/callback
 GITHUB_API_VERSION=2026-03-10
-LAB_TOKEN_ENCRYPTION_KEY=
-LAB_TTL_MINUTES=120
+LAB_TTL_MINUTES=30
+LAB_TOKEN_ENCRYPTION_KEY=replace-with-a-long-random-secret
 
-ORION_API_KEY=
+ORION_API_KEY=replace-me
 ORION_MODEL=moonshotai/kimi-k2-instruct
 ORION_API_TIMEOUT_MS=60000
-ORION_BRAINSTORM_PROMPT_CHARS=1800
-ORION_BRAINSTORM_MAX_TOKENS=900
 
-WATSON_STT_API_KEY=
-WATSON_STT_URL=
+WATSON_STT_API_KEY=replace-me
+WATSON_STT_URL=replace-me
 ```
 
----
+## Authentication
 
-## 6. Firebase Admin Setup
+The backend uses IBM App ID for user login and Passport sessions for browser authentication.
 
-CloudIQ uses `firebase-admin` on the backend. The Admin SDK is initialized once in `services/firebaseService.js`.
+Core auth routes:
 
-### What Firebase Stores
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/auth/login` | Start IBM App ID login |
+| `GET` | `/api/auth/callback` | Handle IBM App ID callback |
+| `GET` | `/api/auth/logout` | Destroy session and redirect |
+| `GET` | `/api/auth/user` | Return current user/session state |
+| `GET` | `/api/auth/status` | Lightweight login status |
+| `GET` | `/api/auth/debug-user` | Debug current session user |
+| `GET` | `/api/user-role` | Return email/admin role state |
+| `POST` | `/api/add-admin` | Add admin email/role access |
+| `DELETE` | `/api/remove-admin` | Remove admin access |
+| `GET` | `/api/list-admins` | List admins |
 
-| Firebase product | Usage |
-| --- | --- |
-| Firestore | Discussion channels, messages, reactions, unread states, presence, brainstorm rooms, AI generations, labs, lab sessions |
-| Realtime Database | Live whiteboard state for Brainstorming rooms |
+Important identity rule:
 
-### Setup Steps
-
-1. Open the Firebase Console.
-2. Create or select a Firebase project.
-3. Enable Firestore.
-4. Enable Realtime Database if using Brainstorm whiteboard sync.
-5. Go to **Project Settings > Service Accounts**.
-6. Generate a new private key.
-7. Copy `project_id`, `client_email`, and `private_key` into `.env`.
-8. Keep the private key escaped as `\n` inside environment variables.
-
-### Singleton Initialization
-
-The service checks `admin.apps.length` before initializing:
-
-```js
-if (admin.apps.length === 0) {
-  firebaseApp = admin.initializeApp({ credential, databaseURL });
-} else {
-  firebaseApp = admin.apps[0];
-}
+```text
+userId = user.sub
 ```
 
-This prevents duplicate Firebase app initialization during local reloads or test runs.
+Use the IBM App ID `sub` value as the canonical user identity for ownership, membership, discussion authorization, socket registration, and lab ownership. Do not replace it with email, username, or GitHub ID.
+
+## Data Stores
+
+### Cloudant
+
+Cloudant stores platform documents such as users, posts, comments, notifications, communities, community requests, memberships, friendships, admins, tutorials, tutorial media, and upload metadata.
+
+`services/cloudantClient.js` initializes the Cloudant client and ensures required databases/design documents exist.
+
+### Firebase Firestore
+
+Firestore is used for discussion and lab metadata paths that need realtime-friendly persistence:
+
+- Discussion channels.
+- Discussion messages.
+- Presence, typing, read state, reactions, and pinned metadata.
+- Brainstorm room metadata and AI generations.
+- Lab records and lab sessions.
+
+### Firebase Realtime Database
+
+RTDB is retained for collaborative whiteboard state and older compatibility paths.
 
 ### Firestore Debug Route
 
-Local and controlled production debugging:
-
-```http
+```text
 GET /api/debug/firestore
 ```
 
-In production, set this only when needed:
+In production this route is blocked unless:
 
 ```env
 FIRESTORE_DEBUG_ROUTE_ENABLED=true
 ```
 
-Disable it again after debugging.
+Use it to verify Firebase Admin credentials and Firestore write behavior before debugging higher-level routes.
 
----
+## Media Uploads
 
-## 7. Cloudinary Media System
+All file uploads should use in-memory buffers. The backend intentionally uses `multer.memoryStorage()` and streams buffers directly into Cloudinary.
 
-CloudIQ uses Cloudinary for user-generated media. Uploads are handled from memory buffers only, avoiding brittle temp-file paths.
+Do not depend on local disk uploads for runtime behavior.
 
-### Media Types
+Supported media areas:
 
-| Area | Media handled |
+| Area | Route |
 | --- | --- |
-| Discussions | Images, videos, documents, raw attachments |
-| Posts | Images and videos |
-| Tutorials | Cover images, inline images, inline videos |
-| Users | Profile images |
+| User onboarding image | `POST /api/user/onboarding` |
+| User profile image | `PUT /api/user/profile` |
+| Post images/videos | `POST /api/posts/create` |
+| Tutorial media | `POST /api/tutorials`, tutorial inline media routes |
+| Discussion files | `POST /api/discussions/channels/:channelId/media` |
 
-### Upload Flow
+Discussion media flow:
 
 ```text
 Frontend FormData
-    |
-    v
-multer.memoryStorage()
-    |
-    v
-req.file.buffer
-    |
-    v
-cloudinary.uploader.upload_stream()
-    |
-    v
-Cloudinary secure_url + public_id
-    |
-    v
-Firestore/Cloudant metadata
+  -> multer memory storage
+  -> Cloudinary upload_stream
+  -> Firestore message metadata
+  -> REST response
+  -> Socket.IO/new history render path
 ```
 
-### Discussion Upload Contract
-
-```http
-POST /api/discussions/channels/:channelId/media
-Content-Type: multipart/form-data
-```
-
-Form field:
-
-```text
-file
-```
-
-Frontend example:
+Frontend upload rule:
 
 ```js
 const form = new FormData();
-form.append("file", selectedFile);
+form.append('file', selectedFile);
 ```
 
-Do not manually set `Content-Type` for multipart requests in the browser.
+Let the browser set the multipart boundary. Do not manually set `Content-Type` for `FormData`.
 
-### Cleanup Handling
+## GitHub Codespaces Labs
 
-- Deleting posts removes associated media.
-- Deleting tutorials removes associated media where possible.
-- Updating profile images attempts to delete the previous image.
-- Discussion media cleanup should treat Cloudinary failures as recoverable when metadata consistency can still be preserved.
+Labs allow an authenticated CloudIQ user to connect GitHub, launch one active Codespace-backed lab, open the returned Codespace URL, and delete the active lab when done.
 
----
+Main routes:
 
-## 8. GitHub Integration
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/github/status` | Check GitHub connection |
+| `GET` | `/api/github/login` | Start GitHub OAuth |
+| `GET` | `/api/github/callback` | GitHub OAuth callback |
+| `GET` | `/api/github/repos` | List accessible repositories |
+| `POST` | `/api/github/logout` | Disconnect GitHub session |
+| `GET` | `/api/labs` | List labs and current active lab |
+| `POST` | `/api/labs/create` | Create a Codespaces lab |
+| `DELETE` | `/api/labs/:labId` | Delete a specific lab |
+| `DELETE` | `/api/labs` | Delete the active lab |
 
-CloudIQ integrates with GitHub for repository access and Codespaces-backed labs.
-
-### OAuth Flow
-
-```text
-User clicks Connect GitHub
-    |
-    v
-GET /api/github/login
-    |
-    v
-GitHub OAuth consent
-    |
-    v
-GET /api/github/callback
-    |
-    v
-Store access token in session
-    |
-    v
-Frontend can list repos and launch labs
-```
-
-The GitHub OAuth app callback URL must match:
-
-```text
-<BACKEND_URL>/api/github/callback
-```
-
-If `GITHUB_CALLBACK_URL` is not set, the backend derives this route from `BACKEND_URL`.
-
-### Repository APIs
-
-```http
-GET /api/github/status
-GET /api/github/login
-GET /api/github/callback
-GET /api/github/repos
-POST /api/github/logout
-```
-
-### Public and Private Repositories
-
-- Public repositories can be checked by URL.
-- Private repositories require the authenticated GitHub OAuth token.
-- Organization repositories may require SSO/SAML approval.
-- GitHub API rate limits and secondary rate limits are surfaced as safe JSON errors.
-
-### Codespaces API
-
-Codespaces labs use repository details and the user GitHub token to create cloud development environments.
-
-Important handling:
-
-- Invalid repo URLs are rejected.
-- Missing repository access returns a clean error.
-- Organization restrictions return an `ORG_RESTRICTED` style error.
-- Codespaces-disabled repos return a frontend-safe error.
-- Delete attempts clean backend state even if remote cleanup is already complete or recoverably denied.
-
----
-
-## 9. Orion AI System
-
-Orion AI powers CloudIQ chat and Brainstorming generation.
-
-### Orion Chat
-
-```http
-POST /api/orion/chat
-```
-
-Supports:
-
-- Text prompts.
-- Optional document text.
-- Optional images using the vision model.
-- Server-Sent Events streaming.
-- Safe JSON errors before streaming starts.
-- Stream cleanup when the client disconnects.
-
-### Brainstorming AI
-
-```http
-POST /api/brainstorm/ai/generate
-POST /api/brainstorm/ai/expand
-POST /api/brainstorm/ai/project
-```
-
-The optimized generation endpoint returns one idea at a time.
-
-Example request:
+Create lab body:
 
 ```json
 {
-  "prompt": "Create a cloud app for small business cost tracking",
-  "roomId": "optional-room-id",
-  "previousIdeas": []
+  "repoUrl": "https://github.com/owner/repo",
+  "branch": "main",
+  "labName": "my-api-lab"
 }
 ```
 
-Example success response:
+Create lab response includes:
 
 ```json
 {
   "success": true,
-  "idea": {
-    "title": "CloudCost Snapshot",
-    "description": "A lightweight dashboard that helps small businesses track cloud spend and spot waste before invoices arrive.",
-    "architecture": "React frontend, Express API, Firebase persistence, scheduled cloud billing imports, and Orion summaries.",
-    "roadmap": "Start with manual spend entry, add provider imports, then add budget alerts and team reports.",
-    "monetization": "Freemium plan for one workspace, paid team plans for alerts, exports, and multi-cloud tracking.",
-    "techStack": "React, Node.js, Express, Firebase, Cloud Functions, Cloudinary, Orion AI"
+  "data": {
+    "labId": "uuid",
+    "display_name": "cloudiq-my-api-lab",
+    "repoUrl": "https://github.com/owner/repo",
+    "codespaceName": "codespace-name",
+    "webUrl": "https://...",
+    "status": "active",
+    "active": true,
+    "expiresAt": "iso-date"
   },
-  "ideas": [
-    {
-      "title": "CloudCost Snapshot",
-      "description": "A lightweight dashboard that helps small businesses track cloud spend and spot waste before invoices arrive.",
-      "architecture": "React frontend, Express API, Firebase persistence, scheduled cloud billing imports, and Orion summaries.",
-      "roadmap": "Start with manual spend entry, add provider imports, then add budget alerts and team reports.",
-      "monetization": "Freemium plan for one workspace, paid team plans for alerts, exports, and multi-cloud tracking.",
-      "techStack": "React, Node.js, Express, Firebase, Cloud Functions, Cloudinary, Orion AI"
-    }
-  ],
-  "metadata": {
-    "model": "moonshotai/kimi-k2-instruct",
-    "parseFormat": "json",
-    "responseTimeMs": 1200,
-    "ideaCursor": 1
-  },
-  "error": null
+  "webUrl": "https://...",
+  "expiresAt": "iso-date"
 }
 ```
 
-The `ideas` array is kept for compatibility, but new frontend code should prefer `idea`.
+Lifecycle guarantees:
 
-### Safety Guarantees
+- Only one active lab is allowed per user.
+- Expired active labs are released before creating a new lab.
+- Deleting a lab clears active state so the user can create another lab immediately.
+- GitHub cleanup failures are handled as recoverable when possible.
+- The cleanup service runs on a schedule to expire/delete stale lab sessions.
 
-- Prompt validation.
-- Provider timeout handling.
-- In-flight duplicate request joining.
-- Lightweight per-user rate limiting.
-- Short retry cache.
-- Structured JSON normalization.
-- No raw provider stack traces.
-- No raw Orion secrets in logs or responses.
+## Orion AI
 
----
+Orion uses NVIDIA NIM-compatible chat completion requests.
 
-## 10. Socket.IO
+Routes:
 
-Socket.IO powers realtime updates across CloudIQ.
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/orion/chat` | Authenticated streaming/chat response |
+| `POST` | `/api/brainstorm/ai/generate` | Generate one structured idea |
+| `POST` | `/api/brainstorm/ai/expand` | Expand an idea |
+| `POST` | `/api/brainstorm/ai/project` | Convert idea to project concept |
 
-### Connection and Registration
+Recommended model:
 
-Clients should register after connecting:
+```env
+ORION_MODEL=moonshotai/kimi-k2-instruct
+```
+
+The model ID should include the publisher prefix.
+
+## Socket.IO
+
+Socket.IO is mounted on the same HTTP server as Express.
+
+### Base Registration
+
+Client registers after connecting:
 
 ```js
-socket.emit("register", {
-  sub: user.sub,
+socket.emit('register', {
+  userId: user.sub,
   email: user.email,
   username: user.name,
-  avatar: user.picture
+  picture: user.picture
 });
 ```
 
-The backend stores the latest socket per user and disconnects older duplicate sessions.
+Server may emit:
+
+| Event | Purpose |
+| --- | --- |
+| `socket_error` | Invalid socket registration or generic socket error |
+| `duplicate_session` | Another socket registered for the same user |
 
 ### Discussion Events
 
-Client-to-server:
+Client events:
+
+| Event | Payload |
+| --- | --- |
+| `join_community_discussions` | `{ community_id }` |
+| `leave_community_discussions` | `{ community_id }` |
+| `join_channel` | `{ channel_id }` |
+| `leave_channel` | `{ channel_id }` |
+| `typing_start` | `{ channel_id }` |
+| `typing_stop` | `{ channel_id }` |
+| `new_message` | `{ channel_id, content, text, client_temp_id }` |
+| `message_reaction` | `{ message_id, emoji }` |
+
+Server events:
 
 | Event | Purpose |
 | --- | --- |
-| `join_community_discussions` | Join community discussion namespace/rooms |
-| `leave_community_discussions` | Leave community discussion rooms |
-| `join_channel` | Join a discussion channel |
-| `leave_channel` | Leave a discussion channel |
-| `typing_start` | Broadcast typing state |
-| `typing_stop` | Stop typing state |
-| `new_message` | Send realtime message |
-| `message_reaction` | Add/update reaction |
-
-Server-to-client examples:
-
-| Event | Purpose |
-| --- | --- |
-| `channel_created` | New channel created |
-| `channel_deleted` | Channel deleted |
-| `new_message` | Message delivered |
-| `typing_start` | User typing |
-| `typing_stop` | User stopped typing |
+| `discussion_error` | Frontend-safe discussion/socket error |
+| `channel_joined` | Channel join confirmation |
+| `new_message` | New persisted message |
 | `message_reaction` | Reaction update |
-| `unread_count_updates` | Unread state changed |
-| `discussion_error` | Explicit discussion socket error |
+| `join_leave_updates` | Community presence updates |
+| `unread_count_updates` | Channel unread refresh hint |
 
-### Brainstorming Whiteboard Events
+### Whiteboard Events
 
-Client-to-server:
+Client events:
 
 | Event | Purpose |
 | --- | --- |
-| `whiteboard:create_room` | Create a brainstorm room |
-| `whiteboard:join_room` | Join a whiteboard room |
-| `whiteboard:leave_room` | Leave a whiteboard room |
-| `whiteboard:sync_canvas` | Sync canvas state |
+| `whiteboard:create_room` | Create collaborative room |
+| `whiteboard:join_room` | Join room |
+| `whiteboard:leave_room` | Leave room |
+| `whiteboard:sync_canvas` | Persist/broadcast canvas state |
 | `whiteboard:clear_canvas` | Clear canvas |
-| `whiteboard:add_sticky_note` | Add a sticky note |
-| `whiteboard:add_connector` | Add a connector |
+| `whiteboard:add_sticky_note` | Add note |
+| `whiteboard:add_connector` | Add connector |
 
-Server-to-client:
+Server events:
 
 | Event | Purpose |
 | --- | --- |
-| `whiteboard:room_created` | Room created |
-| `whiteboard:room_joined` | Room joined with state |
-| `whiteboard:user_joined` | Another user joined |
-| `whiteboard:user_left` | Another user left |
-| `whiteboard:canvas_synced` | Canvas state updated |
-| `whiteboard:canvas_cleared` | Canvas cleared |
-| `whiteboard:sticky_note_added` | Sticky note created |
-| `whiteboard:connector_added` | Connector created |
-| `whiteboard_error` | Explicit whiteboard error |
+| `whiteboard_error` | Frontend-safe error |
+| `whiteboard:room_created` | Created room |
+| `whiteboard:room_joined` | Joined room plus current state |
+| `whiteboard:canvas_cleared` | Canvas cleared broadcast |
+| `whiteboard:sticky_note_added` | Note broadcast |
+| `whiteboard:connector_added` | Connector broadcast |
 
-### Realtime Best Practices
+## API Reference
 
-- Use REST for history and mutations where possible.
-- Use Socket.IO for live delivery and presence.
-- Include `mutationId` for whiteboard changes to prevent duplicate local rendering.
-- Listen for explicit error events and show inline UI messages.
+### Health and Debug
 
----
-
-## 11. Deployment Guide
-
-### Production Checklist
-
-- Use Node.js 20 LTS.
-- Set `NODE_ENV=production`.
-- Set all required environment variables.
-- Use HTTPS.
-- Configure `FRONTEND_URL` to the exact production frontend origin.
-- Configure OAuth callback URLs in IBM App ID and GitHub.
-- Use a long random `SESSION_SECRET`.
-- Keep Firebase, Cloudinary, GitHub, Cloudant, and Orion secrets out of source control.
-- Set `LOG_LEVEL=info`.
-
-### Render
-
-1. Create a new Web Service.
-2. Connect the Git repository.
-3. Set runtime to Node.
-4. Use:
-
-```bash
-npm install
-```
-
-Build command:
-
-```bash
-npm install
-```
-
-Start command:
-
-```bash
-npm start
-```
-
-5. Add all environment variables in Render dashboard.
-6. Set `NODE_ENV=production`.
-7. Set `FRONTEND_URL=https://your-frontend-domain.com`.
-8. Update IBM App ID redirect URI:
-
-```text
-https://your-backend-domain.onrender.com/api/auth/callback
-```
-
-9. Update GitHub OAuth callback URL:
-
-```text
-https://your-backend-domain.onrender.com/api/github/callback
-```
-
-### Railway
-
-1. Create a Railway project.
-2. Connect the repository.
-3. Add environment variables in Railway Variables.
-4. Set:
-
-```env
-NODE_ENV=production
-PORT=5000
-```
-
-5. Railway may inject its own `PORT`; the backend already reads `process.env.PORT`.
-6. Use start command:
-
-```bash
-npm start
-```
-
-7. Configure production frontend and OAuth callback URLs to Railway's generated domain.
-
-### VPS
-
-Recommended stack:
-
-- Ubuntu 22.04 or 24.04
-- Node.js 20 LTS
-- pm2
-- Nginx
-- Let's Encrypt SSL
-
-Install Node:
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-```
-
-Install app:
-
-```bash
-git clone <your-repository-url>
-cd ibm_backend
-npm install --omit=dev
-```
-
-Create `.env`:
-
-```bash
-nano .env
-```
-
-Run with pm2:
-
-```bash
-npm install -g pm2
-pm2 start server.js --name cloudiq-backend
-pm2 save
-pm2 startup
-```
-
-Nginx reverse proxy:
-
-```nginx
-server {
-    server_name api.example.com;
-
-    location / {
-        proxy_pass <BACKEND_URL>;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-Enable SSL:
-
-```bash
-sudo apt install certbot python3-certbot-nginx
-sudo certbot --nginx -d api.example.com
-```
-
-### Docker
-
-Example `Dockerfile`:
-
-```dockerfile
-FROM node:20-alpine
-
-WORKDIR /app
-
-COPY package*.json ./
-RUN npm ci --omit=dev
-
-COPY . .
-
-ENV NODE_ENV=production
-EXPOSE 5000
-
-CMD ["npm", "start"]
-```
-
-Build:
-
-```bash
-docker build -t cloudiq-backend .
-```
-
-Run:
-
-```bash
-docker run --env-file .env -p 5000:5000 cloudiq-backend
-```
-
-Docker Compose:
-
-```yaml
-services:
-  cloudiq-backend:
-    build: .
-    ports:
-      - "5000:5000"
-    env_file:
-      - .env
-    restart: unless-stopped
-```
-
----
-
-## 12. Security
-
-### Secret Management
-
-- Never commit `.env`.
-- Rotate secrets if they are exposed.
-- Use platform secret managers in production.
-- Keep Firebase private keys, Cloudinary secrets, GitHub secrets, Cloudant keys, and Orion keys private.
-- Use different secrets for development and production.
-
-### Firebase Admin Security
-
-- Use least-privilege service accounts where possible.
-- Keep service account JSON out of source control.
-- Restrict production Firebase access to trusted backend environments.
-- Do not expose Admin SDK credentials to frontend code.
-
-### OAuth Security
-
-- Configure exact redirect URIs.
-- Use HTTPS in production.
-- Keep GitHub and IBM App ID client secrets private.
-- Use secure cookies in production.
-- Set `FRONTEND_URL` exactly to the frontend origin.
-
-### Rate Limiting and Request Guards
-
-Current backend protections include:
-
-- Prompt length limits.
-- Body size limits.
-- Orion timeout handling.
-- Brainstorm AI per-user lightweight rate limiting.
-- In-flight duplicate AI request joining.
-- Short-lived prompt cache.
-- Whiteboard mutation deduplication.
-
-For public production deployments, consider adding an external rate limiter such as:
-
-- Cloudflare WAF/rate limiting.
-- Render/Railway edge rules.
-- Nginx `limit_req`.
-- Redis-backed Express rate limiting.
-
-### Validation and Safe Errors
-
-- Malformed JSON returns structured `malformed_json`.
-- Oversized body returns `payload_too_large`.
-- Provider failures return frontend-safe messages.
-- Production stack traces are not exposed by global error handling.
-
-### CORS
-
-The backend only allows the configured frontend origin:
-
-```js
-app.use(cors({
-  origin: FRONTEND_URL,
-  credentials: true
-}));
-```
-
-Use a single exact production frontend URL, not `*`, when credentials are enabled.
-
----
-
-## 13. Performance Optimization
-
-### Request Optimization
-
-- Keep `JSON_BODY_LIMIT` and `FORM_BODY_LIMIT` conservative.
-- Avoid sending large document text to Orion unless needed.
-- Use pagination for messages and feeds.
-- Return structured payloads instead of huge markdown blocks.
-
-### Caching
-
-The backend uses in-memory caches for:
-
-- Community membership checks.
-- Admin role checks.
-- Short-lived AI retry results.
-- In-flight AI request joining.
-
-For multi-instance production, move shared rate limiting/cache state to Redis if strict global limits are required.
-
-### Firebase Optimization
-
-- Use indexed Firestore queries.
-- Keep message pagination limits small.
-- Avoid unbounded realtime listeners.
-- Prefer Firestore for metadata and Realtime Database for high-frequency whiteboard state.
-- Use `firestore.indexes.json` for required composite indexes.
-
-### Socket.IO Optimization
-
-- Join only the rooms a socket needs.
-- Leave rooms on navigation/disconnect.
-- Use `mutationId` to avoid duplicate whiteboard renders.
-- Avoid broadcasting large payloads at high frequency.
-- Throttle canvas sync on the client and server.
-
-### Cloudinary Optimization
-
-- Upload from buffers, not temporary disk paths.
-- Use `resource_type: auto` for mixed discussion attachments.
-- Use optimized video URLs.
-- Delete old media when replacing profile/tutorial/post media.
-
-### Orion Optimization
-
-- Brainstorm generation returns one idea at a time.
-- Brainstorm prompt size is capped with `ORION_BRAINSTORM_PROMPT_CHARS`.
-- Brainstorm response tokens are capped with `ORION_BRAINSTORM_MAX_TOKENS`.
-- The backend normalizes JSON to one frontend-safe idea object.
-
----
-
-## 14. Troubleshooting
-
-### Firestore gRPC Issues
-
-Symptoms:
-
-- Firestore writes hang or crash.
-- `grpc` or `@grpc/grpc-js` errors.
-- Windows `EIO`, `EPERM`, or path-related failures.
-
-Fixes:
-
-1. Use Node.js 20 LTS.
-2. Stop all running Node processes.
-3. Reinstall dependencies:
-
-```bash
-Remove-Item -Recurse -Force node_modules
-Remove-Item -Force package-lock.json
-npm install
-```
-
-4. Prefer a short local path on Windows, for example:
-
-```text
-C:\cloudiq-backend
-```
-
-5. Test Firestore:
-
-```http
-GET /api/debug/firestore
-```
-
-### Node Version Issues
-
-Use Node 20 LTS for best compatibility with Firebase Admin, Firestore, Socket.IO, and native dependencies.
-
-Check version:
-
-```bash
-node -v
-```
-
-Recommended:
-
-```text
-v20.x.x
-```
-
-### Cloudinary Upload Issues
-
-Check:
-
-- `CLOUDINARY_CLOUD_NAME`
-- `CLOUDINARY_API_KEY`
-- `CLOUDINARY_API_SECRET`
-- File size and MIME type.
-- Frontend `FormData` field name.
-
-Discussion uploads must use:
-
-```js
-form.append("file", selectedFile);
-```
-
-Do not use local file paths in production upload logic.
-
-### GitHub OAuth Issues
-
-Check:
-
-- `GITHUB_CLIENT_ID`
-- `GITHUB_CLIENT_SECRET`
-- `GITHUB_CALLBACK_URL`
-- OAuth callback URL in GitHub Developer Settings.
-- Session cookies and frontend origin.
-
-Common callback URL:
-
-```text
-<BACKEND_URL>/api/github/callback
-```
-
-Production callback:
-
-```text
-https://api.example.com/api/github/callback
-```
-
-### Codespaces Issues
-
-Common causes:
-
-- User has not connected GitHub.
-- Repository is private and token lacks access.
-- Organization requires SSO/SAML approval.
-- Codespaces disabled for repository or organization.
-- GitHub rate limit.
-- Existing active lab lock not cleared.
-
-Recommended steps:
-
-1. Reconnect GitHub.
-2. Confirm repository access in GitHub UI.
-3. Check organization OAuth restrictions.
-4. Delete stale lab from CloudIQ.
-5. Retry after GitHub rate limits reset.
-
-### Firebase Credential Issues
-
-Symptoms:
-
-- `[FIREBASE] Firebase credentials not configured`
-- `Firebase is not configured`
-- Firestore routes return empty data or fail.
-
-Fix:
-
-- Ensure all required Firebase variables are present.
-- Keep private key newlines escaped as `\n`.
-- Wrap private key in quotes in `.env`.
-- Restart the backend after changes.
-
-Correct format:
-
-```env
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-```
-
-### Orion AI Issues
-
-Check:
-
-- `ORION_API_KEY` or `NVIDIA_API_KEY`.
-- `ORION_MODEL`.
-- `NVIDIA_API_URL`.
-- `ORION_API_TIMEOUT_MS`.
-
-If Brainstorming is slow:
-
-- Lower `ORION_BRAINSTORM_MAX_TOKENS`.
-- Lower `ORION_BRAINSTORM_PROMPT_CHARS`.
-- Keep frontend prompts concise.
-- Avoid sending large previous idea arrays.
-
-### CORS and Cookie Issues
-
-Symptoms:
-
-- Login works but frontend still appears logged out.
-- Browser blocks requests.
-- Cookies missing in production.
-
-Fix:
-
-- Set `FRONTEND_URL` to the exact frontend origin.
-- Use HTTPS in production.
-- Set `NODE_ENV=production`.
-- Ensure frontend sends credentials:
-
-```js
-fetch(url, { credentials: "include" });
-```
-
----
-
-## 15. API Documentation
-
-Base URL:
-
-```text
-<BACKEND_URL>
-```
-
-Production:
-
-```text
-https://api.example.com
-```
-
-### Health
-
-| Method | Endpoint | Auth | Description |
+| Method | Route | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/` | No | Deployment status check |
-| GET | `/api/health` | No | API health check |
-| GET | `/api/debug/firestore` | Debug only | Test Firestore write |
+| `GET` | `/api/health` | Public | Server health |
+| `GET` | `/api/debug/firestore` | Dev or enabled prod | Test Firestore write |
 
-### Authentication
+### Users
 
-| Method | Endpoint | Auth | Description |
+| Method | Route | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/api/auth/login` | No | Start IBM App ID login |
-| GET | `/api/auth/callback` | No | IBM App ID callback |
-| GET | `/api/auth/logout` | Session | Destroy session and redirect |
-| GET | `/api/auth/user` | Optional | Return current user/session state |
-| GET | `/api/auth/status` | Optional | Lightweight auth check |
-| GET | `/api/auth/debug-user` | Optional, non-production only | Inspect App ID user payload while debugging |
-| GET | `/api/user-role` | Session | Return email and admin role |
-
-Legacy auth aliases remain available for existing deployments and OAuth provider settings:
-
-```text
-/auth/login
-/auth/callback
-/auth/logout
-/auth/user
-/auth/status
-```
+| `GET` | `/api/user/profile` | Session | Current profile |
+| `GET` | `/api/user/dashboard` | Session | Dashboard data |
+| `PUT` | `/api/user/sync-session` | Session | Sync session/user data |
+| `GET` | `/api/user/courses` | Session | Courses data |
+| `POST` | `/api/user/onboarding` | Session | Save onboarding/profile image |
+| `PUT` | `/api/user/profile` | Session | Update profile/profile image |
+| `DELETE` | `/api/user/profile-image` | Session | Delete profile image |
+| `DELETE` | `/api/user/account` | Session | Delete account |
 
 ### Admin
 
-| Method | Endpoint | Auth | Description |
+| Method | Route | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/api/admin/dashboard` | Admin | Admin dashboard data |
-| GET | `/api/admin/list` | Admin | List admins |
-| POST | `/api/admin/add` | Admin | Add admin |
-| PUT | `/api/admin/:id/role` | Admin | Update admin role |
-| DELETE | `/api/admin/:id` | Admin | Remove admin |
-| GET | `/api/admin/me/role` | Session | Return current admin role |
-
-### User
-
-| Method | Endpoint | Auth | Description |
-| --- | --- | --- | --- |
-| GET | `/api/user/profile` | Session | Current user profile |
-| GET | `/api/user/dashboard` | Session | Dashboard payload |
-| PUT | `/api/user/sync-session` | Session | Sync session to backend user |
-| GET | `/api/user/courses` | Session | Courses/labs entry data |
-| POST | `/api/user/onboarding` | Session | Complete onboarding with optional image |
-| PUT | `/api/user/profile` | Session | Update profile with optional image |
-| DELETE | `/api/user/profile-image` | Session | Delete profile image |
-| DELETE | `/api/user/account` | Session | Delete user account |
+| `GET` | `/api/admin/dashboard` | Admin | Admin dashboard |
+| `GET` | `/api/admin/list` | Admin | List admin users |
+| `POST` | `/api/admin/add` | Admin | Add admin |
+| `PUT` | `/api/admin/:id/role` | Admin | Update role |
+| `DELETE` | `/api/admin/:id` | Admin | Delete admin/user entry |
+| `GET` | `/api/admin/me/role` | Session | Current user role |
 
 ### Communities
 
-| Method | Endpoint | Auth | Description |
+| Method | Route | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/api/communities` | Optional/session-aware | List communities |
-| GET | `/api/communities/:id` | Optional/session-aware | Get community |
-| POST | `/api/communities` | Session | Create community |
-| PUT | `/api/communities/:id` | Owner/admin | Update community |
-| DELETE | `/api/communities/:id` | Owner/admin | Delete community |
-| POST | `/api/communities/:id/join` | Session | Join public community |
-| POST | `/api/communities/:id/leave` | Session | Leave community |
-| POST | `/api/communities/:id/request` | Session | Request private community access |
-| GET | `/api/communities/:id/requests` | Owner/admin | List join requests |
-| POST | `/api/communities/:id/requests/:requestId/approve` | Owner/admin | Approve request |
-| POST | `/api/communities/:id/requests/:requestId/reject` | Owner/admin | Reject request |
+| `GET` | `/api/communities` | Public | List communities |
+| `GET` | `/api/communities/:id` | Public/session-aware | Get community |
+| `POST` | `/api/communities` | Session | Create community |
+| `PUT` | `/api/communities/:id` | Owner/admin | Update community |
+| `DELETE` | `/api/communities/:id` | Owner/admin | Delete community |
+| `POST` | `/api/communities/:id/join` | Session | Join public community |
+| `POST` | `/api/communities/:id/leave` | Session | Leave community |
+| `POST` | `/api/communities/:id/request` | Session | Request private community access |
+| `GET` | `/api/communities/:id/requests` | Owner/admin | List membership requests |
+| `POST` | `/api/communities/:id/requests/:requestId/approve` | Owner/admin | Approve request |
+| `POST` | `/api/communities/:id/requests/:requestId/reject` | Owner/admin | Reject request |
 
 ### Discussions
 
-| Method | Endpoint | Auth | Description |
+| Method | Route | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/api/discussions/communities/:communityId/channels` | Session | List channels |
-| POST | `/api/discussions/communities/:communityId/channels` | Session | Create channel |
-| DELETE | `/api/discussions/communities/:communityId/channels/:channelId` | Session | Delete channel |
-| GET | `/api/discussions/channels/:channelId/messages` | Session | Paginated messages |
-| POST | `/api/discussions/channels/:channelId/messages` | Session | Send text message |
-| POST | `/api/discussions/channels/:channelId/media` | Session | Upload media message |
-| POST | `/api/discussions/messages/:messageId/pin` | Session | Pin message |
-| POST | `/api/discussions/messages/:messageId/unpin` | Session | Unpin message |
-| POST | `/api/discussions/messages/:messageId/reactions` | Session | Add/update reaction |
-| POST | `/api/discussions/channels/:channelId/read` | Session | Mark channel read |
-| GET | `/api/discussions/communities/:communityId/unreads` | Session | Get unread counts |
-
-### Brainstorming
-
-| Method | Endpoint | Auth | Description |
-| --- | --- | --- | --- |
-| POST | `/api/brainstorm/rooms` | Session | Create room |
-| GET | `/api/brainstorm/rooms/:roomId` | Session | Get room and whiteboard |
-| POST | `/api/brainstorm/rooms/:roomId/join` | Session | Join room |
-| POST | `/api/brainstorm/rooms/:roomId/leave` | Session | Leave room |
-| POST | `/api/brainstorm/rooms/:roomId/sync` | Session | Sync whiteboard |
-| POST | `/api/brainstorm/rooms/:roomId/clear` | Session | Clear whiteboard |
-| POST | `/api/brainstorm/rooms/:roomId/notes` | Session | Add sticky note |
-| POST | `/api/brainstorm/rooms/:roomId/connectors` | Session | Add connector |
-| DELETE | `/api/brainstorm/rooms/:roomId` | Owner/admin | Delete room |
-| POST | `/api/brainstorm/ai/generate` | Session | Generate one structured idea |
-| POST | `/api/brainstorm/ai/expand` | Session | Expand one idea |
-| POST | `/api/brainstorm/ai/project` | Session | Convert idea to project concept |
-
-### Orion AI
-
-| Method | Endpoint | Auth | Description |
-| --- | --- | --- | --- |
-| POST | `/api/orion/chat` | Session | Streaming Orion chat |
-
-### Labs
-
-| Method | Endpoint | Auth | Description |
-| --- | --- | --- | --- |
-| GET | `/api/labs` | Session | List user labs |
-| POST | `/api/labs/create` | Session + GitHub | Create Codespaces lab |
-| DELETE | `/api/labs/:labId` | Session | Delete one lab |
-| DELETE | `/api/labs` | Session | Delete active/current lab |
-
-### GitHub
-
-| Method | Endpoint | Auth | Description |
-| --- | --- | --- | --- |
-| GET | `/api/github/status` | Session | GitHub connection status |
-| GET | `/api/github/login` | Session | Start GitHub OAuth |
-| GET | `/api/github/callback` | GitHub OAuth | GitHub callback |
-| GET | `/api/github/repos` | Session + GitHub | List repositories |
-| POST | `/api/github/logout` | Session | Disconnect GitHub |
-
-### Uploads and Media
-
-| Method | Endpoint | Auth | Description |
-| --- | --- | --- | --- |
-| POST | `/api/posts/create` | Session | Create post with optional images/videos |
-| POST | `/api/tutorials` | Session/admin depending route logic | Create tutorial with media |
-| POST | `/api/tutorials/...` | Session/admin depending route logic | Inline tutorial media upload routes |
-| POST | `/api/discussions/channels/:channelId/media` | Session | Discussion media upload |
-| POST | `/api/user/onboarding` | Session | Profile image during onboarding |
-| PUT | `/api/user/profile` | Session | Profile image update |
-| POST | `/api/voice/transcribe` | Session | Audio transcription via IBM Watson |
+| `GET` | `/api/discussions/communities/:communityId/channels` | Member | List channels |
+| `POST` | `/api/discussions/communities/:communityId/channels` | Member/admin logic | Create channel |
+| `DELETE` | `/api/discussions/communities/:communityId/channels/:channelId` | Owner/admin | Delete channel |
+| `GET` | `/api/discussions/channels/:channelId/messages` | Channel member | Message history |
+| `POST` | `/api/discussions/channels/:channelId/messages` | Channel member | Create text message |
+| `POST` | `/api/discussions/channels/:channelId/media` | Channel member | Upload media message |
+| `POST` | `/api/discussions/messages/:messageId/pin` | Member/admin logic | Pin message |
+| `POST` | `/api/discussions/messages/:messageId/unpin` | Member/admin logic | Unpin message |
+| `POST` | `/api/discussions/messages/:messageId/reactions` | Member | Add/update reaction |
+| `POST` | `/api/discussions/channels/:channelId/read` | Member | Mark channel read |
+| `GET` | `/api/discussions/communities/:communityId/unreads` | Member | Unread state |
 
 ### Posts, Comments, Friends, Notifications
 
-| Area | Endpoints |
+| Area | Routes |
 | --- | --- |
 | Posts | `GET /api/posts`, `POST /api/posts/create`, `DELETE /api/posts/:id`, `POST /api/posts/:id/like` |
 | Comments | `POST /api/comments/create`, `GET /api/comments/:post_id`, `DELETE /api/comments/:id` |
 | Friends | `GET /api/friends/discover`, `POST /api/friends/request`, `POST /api/friends/accept`, `POST /api/friends/reject`, `DELETE /api/friends/:id`, `GET /api/friends` |
 | Notifications | `GET /api/notifications`, `PATCH /api/notifications/:id/read` |
-| Tutorials | `GET /api/tutorials`, `GET /api/tutorials/:id`, `POST /api/tutorials`, `PUT /api/tutorials/:id`, `DELETE /api/tutorials/:id` plus inline media routes |
 
----
+### Tutorials
 
-## 16. Contributing Guide
+| Method | Route | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/tutorials` | Public | List tutorials |
+| `GET` | `/api/tutorials/:id` | Public | Get tutorial |
+| `POST` | `/api/tutorials` | Session/admin logic | Create tutorial |
+| `PUT` | `/api/tutorials/:id` | Session/admin logic | Update tutorial |
+| `DELETE` | `/api/tutorials/:id` | Session/admin logic | Delete tutorial |
 
-### Branch Workflow
+The tutorials route also contains inline media upload endpoints for tutorial content assets.
 
-Use short, descriptive branches:
+### Brainstorm
 
-```bash
-git checkout -b fix/orion-brainstorm-response
-git checkout -b feature/lab-session-cleanup
-git checkout -b docs/backend-readme
+| Method | Route | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/brainstorm/rooms` | Session-aware route logic | Create room |
+| `GET` | `/api/brainstorm/rooms/:roomId` | Session-aware route logic | Get room |
+| `POST` | `/api/brainstorm/rooms/:roomId/join` | Session-aware route logic | Join room |
+| `POST` | `/api/brainstorm/rooms/:roomId/leave` | Session-aware route logic | Leave room |
+| `POST` | `/api/brainstorm/rooms/:roomId/sync` | Session-aware route logic | Sync whiteboard |
+| `POST` | `/api/brainstorm/rooms/:roomId/clear` | Session-aware route logic | Clear whiteboard |
+| `POST` | `/api/brainstorm/rooms/:roomId/notes` | Session-aware route logic | Add note |
+| `POST` | `/api/brainstorm/rooms/:roomId/connectors` | Session-aware route logic | Add connector |
+| `DELETE` | `/api/brainstorm/rooms/:roomId` | Session-aware route logic | Delete room |
+| `POST` | `/api/brainstorm/ai/generate` | Session-aware route logic | Generate idea |
+| `POST` | `/api/brainstorm/ai/expand` | Session-aware route logic | Expand idea |
+| `POST` | `/api/brainstorm/ai/project` | Session-aware route logic | Convert to project |
+
+### Voice
+
+| Method | Route | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/voice/transcribe` | Session | Transcribe uploaded audio |
+
+## Frontend Integration Notes
+
+### Sessions and Cookies
+
+Frontend requests should include credentials:
+
+```js
+fetch(`${backendUrl}/api/auth/user`, {
+  credentials: 'include'
+});
 ```
 
-### Local Development Workflow
+Axios:
 
-1. Pull latest changes.
-2. Install dependencies if `package.json` changed.
-3. Create a focused branch.
-4. Make a small, behavior-preserving change.
-5. Run targeted checks.
-6. Open a pull request.
-
-### Recommended Checks
-
-For touched backend files:
-
-```bash
-node --check server.js
-node --check routes/brainstorm.js
-node --check routes/orion.js
-node --check services/brainstormService.js
-node --check services/firebaseService.js
-node --check sockets/discussions.js
-node --check sockets/whiteboard.js
+```js
+axios.create({
+  baseURL: backendUrl,
+  withCredentials: true
+});
 ```
 
-Run the server:
+### Discussion Panel
 
-```bash
-npm run dev
+Use REST for history and mutations. Use Socket.IO for realtime delivery.
+
+Recommended order:
+
+1. Fetch `/api/auth/user`.
+2. Use `user.sub` as `userId`.
+3. Fetch channels with `/api/discussions/communities/:communityId/channels`.
+4. Fetch messages with `/api/discussions/channels/:channelId/messages`.
+5. Connect Socket.IO and emit `register`.
+6. Join community/channel sockets after REST authorization succeeds.
+7. Upload files through `/api/discussions/channels/:channelId/media`.
+8. Render the returned media message immediately and also accept the realtime message event.
+
+See [DISCUSSION_PANEL_README.md](./DISCUSSION_PANEL_README.md) for the full frontend handoff.
+
+### Labs Page
+
+Frontend should expose:
+
+- GitHub connection state.
+- GitHub login redirect.
+- Repository URL input.
+- Optional branch/ref input.
+- Optional custom lab name input.
+- Launch button.
+- Active lab status.
+- Countdown from `expiresAt`.
+- Open Codespace link from `webUrl`.
+- Delete lab button.
+- Inline error states for `GITHUB_AUTH_REQUIRED`, `PRIVATE_REPO_AUTH_REQUIRED`, `DUPLICATE_ACTIVE_LAB`, `REPO_NOT_FOUND`, `ORG_RESTRICTED`, and `CODESPACES_UNAVAILABLE`.
+
+## Operations
+
+### Startup Behavior
+
+On startup the backend:
+
+- Loads `.env`.
+- Validates production environment variables.
+- Configures CORS and sessions.
+- Initializes Passport and IBM App ID when configured.
+- Mounts GitHub OAuth and labs routes.
+- Initializes Cloudant and design documents.
+- Initializes Firebase Admin when configured.
+- Configures Cloudinary.
+- Starts Socket.IO.
+- Starts scheduled lab cleanup.
+- Logs mounted route groups and callback URL hints.
+
+### Logging
+
+Use:
+
+```env
+LOG_LEVEL=info
 ```
 
-### Commit Standards
-
-Use clear, action-oriented commit messages:
+Available levels:
 
 ```text
-fix: stabilize Orion brainstorming responses
-feat: add Codespaces lab cleanup
-docs: expand backend deployment guide
-chore: tighten production logging
+debug < info < warn < error
 ```
 
-### Pull Request Checklist
-
-- The change is scoped and easy to review.
-- Auth, discussions, tutorials, labs, Firebase, Socket.IO, and Orion integrations are not broken.
-- New environment variables are documented.
-- Error responses are frontend-safe.
-- Secrets are not logged or committed.
-- Syntax checks pass for touched files.
-- Deployment notes are updated when needed.
-
----
-
-## Production Notes
-
-CloudIQ Backend is designed to be practical, stable, and deployment-ready. Keep changes incremental, preserve existing contracts, and document every new external dependency or environment variable.
+`utils/logger.js` redacts sensitive keys and token-like values before logging.
 
 Recommended production defaults:
 
@@ -1546,5 +849,166 @@ ORION_BRAINSTORM_PROMPT_CHARS=1800
 ORION_BRAINSTORM_MAX_TOKENS=900
 ```
 
-Use Node 20 LTS, keep secrets in your hosting provider's environment manager, and verify Firebase, Cloudinary, GitHub OAuth, Cloudant, and Orion credentials before shipping.
+### Checks
 
+Syntax-check touched files:
+
+```bash
+node --check server.js
+node --check routes/discussions.js
+node --check routes/labs.js
+node --check routes/orion.js
+node --check services/firebaseService.js
+node --check services/githubCodespacesService.js
+node --check sockets/discussions.js
+node --check sockets/whiteboard.js
+```
+
+Run the server:
+
+```bash
+npm run dev
+```
+
+Build is not defined for this backend. Use syntax checks and live route smoke tests.
+
+## Troubleshooting
+
+### Server exits immediately in production
+
+`config/env.js` exits in production when required variables are missing or URLs are invalid.
+
+Check:
+
+- `FRONTEND_URL`
+- `BACKEND_URL`
+- `SESSION_SECRET`
+- Cloudant credentials
+- Firebase credentials
+- Cloudinary credentials
+- GitHub credentials
+- IBM App ID credentials
+- `ORION_API_KEY`
+
+### CORS or cookies fail
+
+Confirm:
+
+- `FRONTEND_URL` exactly matches the browser origin.
+- `CORS_ALLOWED_ORIGINS` includes every deployed frontend origin.
+- Frontend requests use credentials.
+- Production URLs are HTTPS.
+- Callback URLs have no accidental trailing slash unless the provider dashboard also has it.
+
+### IBM App ID callback fails
+
+Confirm the dashboard callback exactly matches:
+
+```text
+{BACKEND_URL}/api/auth/callback
+```
+
+Also check:
+
+- `APPID_REDIRECT_URI`
+- `APPID_OAUTH_SERVER_URL`
+- `APPID_CLIENT_ID`
+- `APPID_SECRET`
+- Browser cookies are accepted.
+
+### GitHub OAuth callback fails
+
+Confirm the GitHub OAuth app callback exactly matches:
+
+```text
+{BACKEND_URL}/api/github/callback
+```
+
+Check:
+
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+- `GITHUB_CALLBACK_URL`
+- User is already authenticated with CloudIQ before starting GitHub OAuth.
+
+### Codespace creation fails
+
+Common response codes:
+
+| Code | Meaning |
+| --- | --- |
+| `GITHUB_AUTH_REQUIRED` | User must connect GitHub |
+| `PRIVATE_REPO_AUTH_REQUIRED` | Private/restricted repo needs GitHub auth |
+| `DUPLICATE_ACTIVE_LAB` | User already has one active lab |
+| `REPO_NOT_FOUND` | Repo URL is wrong or inaccessible |
+| `ORG_RESTRICTED` | Organization SSO/OAuth approval required |
+| `GITHUB_RATE_LIMIT` | GitHub API rate limit |
+| `CODESPACES_UNAVAILABLE` | Codespaces unavailable for repo/account |
+| `FIRESTORE_PERSISTENCE_FAILED` | Codespace was created but lab metadata could not persist |
+
+### Firestore/gRPC issues on Windows
+
+Recommended runtime:
+
+```text
+Node.js 20 LTS
+```
+
+Useful checks:
+
+- Move the backend to a shorter path if native module or deep-path issues appear.
+- Verify `/api/debug/firestore` in development.
+- Confirm the private key has escaped newlines.
+- Confirm Firestore indexes are deployed when querying ordered/filter paths.
+
+### Discussion media uploads fail
+
+Confirm:
+
+- Frontend uses `FormData.append('file', file)`.
+- Frontend does not manually set multipart `Content-Type`.
+- Cloudinary variables are configured.
+- Firebase variables are configured.
+- The user is authorized for the channel.
+- The route is `/api/discussions/channels/:channelId/media`.
+
+### Orion returns provider errors
+
+Confirm:
+
+- `ORION_API_KEY` is valid.
+- `ORION_MODEL` includes the publisher prefix.
+- `NVIDIA_API_URL` points to the expected chat completions endpoint.
+- Request size does not exceed configured guards.
+
+## Security Notes
+
+- Never commit real `.env` values.
+- Rotate any credential that was committed or shared.
+- Use strong `SESSION_SECRET` and `LAB_TOKEN_ENCRYPTION_KEY` values in production.
+- Keep `NODE_ENV=production` for deployed environments.
+- Use HTTPS origins in production.
+- Keep provider callback URLs exact.
+- Avoid logging request bodies that contain credentials, tokens, private keys, or cookies.
+- Keep uploads buffer-only and validate authorization before accepting media.
+- Preserve the canonical identity rule: `userId = user.sub`.
+- Keep REST and Socket.IO authorization aligned for discussions and communities.
+
+## Deployment Notes
+
+For Render, Railway, Fly.io, Azure, IBM Cloud, or a VPS:
+
+1. Set all required environment variables in the hosting provider's secret manager.
+2. Use Node.js 20 LTS.
+3. Install dependencies with `npm install`.
+4. Start with `npm start`.
+5. Configure IBM App ID callback to `{BACKEND_URL}/api/auth/callback`.
+6. Configure GitHub OAuth callback to `{BACKEND_URL}/api/github/callback`.
+7. Configure frontend `VITE_BACKEND_URL` or equivalent to the backend public URL.
+8. Ensure frontend requests include cookies/credentials.
+9. Verify `/api/health`.
+10. Verify auth login/logout.
+11. Verify `/api/debug/firestore` only in development or with explicit production enablement.
+12. Verify Cloudinary upload, discussion history, GitHub OAuth, lab creation/deletion, and Orion chat.
+
+This backend should be changed incrementally. Auth, discussions, Firestore, Cloudinary, Codespaces labs, Socket.IO, tutorials, posts, communities, and Orion all share session and identity assumptions, so update contracts carefully and keep frontend-facing behavior stable.

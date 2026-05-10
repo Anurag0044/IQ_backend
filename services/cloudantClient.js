@@ -132,8 +132,6 @@ const DATABASES = [
   'tutorials',    // Stores tutorial documents with Cloudinary image URLs
   'tutorial_media',
   'upload_metadata',
-  // GitHub Codespaces labs
-  'lab_sessions',
 ];
 
 /**
@@ -320,22 +318,6 @@ async function createDesignDocs() {
           },
           by_context: {
             map: 'function(doc) { if (doc.context_type && doc.context_id) emit([doc.context_type, doc.context_id, doc.created_at], null); }',
-          },
-        },
-      },
-    },
-    // Lab sessions: query active labs by user and expired labs for cleanup
-    {
-      db: 'lab_sessions',
-      docId: '_design/lab_sessions',
-      doc: {
-        _id: '_design/lab_sessions',
-        views: {
-          by_user_status: {
-            map: 'function(doc) { if (doc.user_id && doc.status) emit([doc.user_id, doc.status, doc.created_at], null); }',
-          },
-          by_status_expires_at: {
-            map: 'function(doc) { if (doc.status && doc.expires_at) emit([doc.status, doc.expires_at], null); }',
           },
         },
       },

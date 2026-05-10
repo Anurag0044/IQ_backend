@@ -1,45 +1,25 @@
 const cron = require('node-cron');
-const cloudant = require('./cloudantClient');
 const {
   fetchCodespace,
   stopCodespace,
   deleteCodespace,
-  decryptAccessToken,
 } = require('./githubCodespacesService');
+const firebaseService = require('./firebaseService');
 const logger = require('../utils/logger');
 
-const DB_NAME = 'lab_sessions';
 const CLEANUP_INTERVAL = '*/5 * * * *';
 
 let cleanupTask = null;
 let cleanupRunning = false;
 
-function cloudantErrorDetails(err) {
+function errorDetails(err) {
   const status = err.status || err.statusCode || err.code || 'no-status';
-  const message = err.message || 'Cloudant request failed';
+  const message = err.message || 'Lab cleanup request failed';
   return `${status}: ${message}`;
 }
 
-async function verifyCloudantCleanupAuth() {
-  await cloudant.getDatabaseInformation({ db: DB_NAME });
-  logger.debug('[LABS][CLOUDANT] cleanup auth verified');
-}
-
 async function findExpiredActiveLabs(nowIso) {
-  const response = await cloudant.postFind({
-    db: DB_NAME,
-    selector: {
-      status: 'active',
-      expires_at: { $lte: nowIso },
-    },
-    limit: 100,
-  });
-  return response.result.docs || [];
-}
-
-async function fetchLabDocument(labId) {
-  const response = await cloudant.getDocument({ db: DB_NAME, docId: labId });
-  return response.result;
+  return firebaseService.getExpiredActiveLabs(nowIso, 100);
 }
 
 function buildReleasedLabDocument(lab, status, details = {}) {
@@ -52,89 +32,45 @@ function buildReleasedLabDocument(lab, status, details = {}) {
     web_url: null,
     session_data: null,
     codespace_session: null,
-    github_access_token_encrypted: null,
     deleted_at: status === 'deleted' ? now : lab.deleted_at,
+    deletedAt: status === 'deleted' ? now : lab.deletedAt,
     expired_at: status === 'expired' ? now : lab.expired_at,
+    expiredAt: status === 'expired' ? now : lab.expiredAt,
     cleanup_error: details.cleanup_error || undefined,
     github_cleanup_warning: details.github_cleanup_warning || undefined,
     updated_at: now,
+    updatedAt: now,
   };
 }
 
 async function softDeleteLabDocument(lab, status, details = {}) {
-  const freshLab = await fetchLabDocument(lab._id).catch((err) => {
-    if (err.status === 404 || err.statusCode === 404) return null;
-    throw err;
+  const labId = lab._id || lab.id;
+  const updated = buildReleasedLabDocument(lab, status, details);
+  const saved = status === 'deleted'
+    ? await firebaseService.deleteLab(labId, updated)
+    : await firebaseService.updateLab(labId, updated);
+
+  await firebaseService.updateLabSession(lab.sessionId || lab.session_id || labId, {
+    labId,
+    userId: lab.userId || lab.user_id,
+    status,
+    endedAt: new Date().toISOString(),
+  }).catch((err) => {
+    logger.warn('[LABS][FIRESTORE] Failed to close expired lab session:', err.message);
   });
 
-  if (!freshLab) {
-    logger.debug(`[LABS][CLOUDANT] lab document already removed: ${lab._id}`);
-    return null;
-  }
-
-  const updated = buildReleasedLabDocument(freshLab, status, details);
-  await cloudant.putDocument({
-    db: DB_NAME,
-    docId: freshLab._id,
-    document: updated,
-  });
-
-  logger.debug('[LABS][CLOUDANT] soft delete fallback used');
+  logger.debug('[LABS][FIRESTORE] lab released');
   logger.debug('[LABS] active lab released');
-  return updated;
+  return saved;
 }
 
 async function removeLabDocument(lab, status = 'expired', details = {}) {
-  logger.debug('[LABS][CLOUDANT] removing lab document');
-  logger.debug('[LABS][CLOUDANT] deleting lab document');
-
-  let lastDeleteError = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const freshLab = await fetchLabDocument(lab._id);
-      await cloudant.deleteDocument({
-        db: DB_NAME,
-        docId: freshLab._id,
-        rev: freshLab._rev,
-      });
-      logger.debug('[LABS][CLOUDANT] lab document removed');
-      logger.debug('[LABS] active lab released');
-      return { removed: true, document: null };
-    } catch (err) {
-      if (err.status === 404 || err.statusCode === 404) {
-        logger.debug(`[LABS][CLOUDANT] lab document already removed: ${lab._id}`);
-        logger.debug('[LABS] active lab released');
-        return { removed: true, document: null };
-      }
-
-      lastDeleteError = err;
-      logger.warn(`[LABS][CLOUDANT] hard delete attempt ${attempt} failed for ${lab._id}: ${cloudantErrorDetails(err)}`);
-    }
-  }
-
-  try {
-    const fallback = await softDeleteLabDocument(lab, status, {
-      ...details,
-      cleanup_error: details.cleanup_error || cloudantErrorDetails(lastDeleteError),
-    });
-    return { removed: false, document: fallback };
-  } catch (fallbackErr) {
-    logger.error(`[LABS][CLOUDANT] soft delete fallback failed for ${lab._id}: ${cloudantErrorDetails(fallbackErr)}`);
-    throw fallbackErr;
-  }
-}
-
-function decryptLabCleanupToken(lab) {
-  try {
-    return decryptAccessToken(lab.github_access_token_encrypted);
-  } catch (err) {
-    logger.warn(`[LABS][CLEANUP] Could not decrypt GitHub token for lab ${lab._id}: ${err.message}`);
-    return null;
-  }
+  const document = await softDeleteLabDocument(lab, status, details);
+  return { removed: false, document };
 }
 
 async function destroyExpiredCodespace(lab, accessToken) {
-  const codespaceName = lab.codespace_name;
+  const codespaceName = lab.codespaceName || lab.codespace_name;
   if (!codespaceName) {
     logger.debug(`[LABS][CLEANUP] Lab ${lab._id} has no codespace name; treating it as already removed.`);
     return { warning: undefined };
@@ -143,6 +79,10 @@ async function destroyExpiredCodespace(lab, accessToken) {
   const codespaceResult = await fetchCodespace(accessToken, codespaceName, { recoverable: true });
   if (codespaceResult.alreadyRemoved) {
     logger.debug(`[LABS][CLEANUP] Codespace already removed for expired lab ${lab._id}.`);
+    return { warning: codespaceResult.message };
+  }
+  if (codespaceResult.recoverable) {
+    logger.warn(`[LABS][CLEANUP] Skipping remote cleanup for expired lab ${lab._id}: ${codespaceResult.message}`);
     return { warning: codespaceResult.message };
   }
 
@@ -185,7 +125,6 @@ async function cleanupExpiredLabs() {
   logger.debug(`[LABS][CLEANUP] Checking for expired labs at ${nowIso}`);
 
   try {
-    await verifyCloudantCleanupAuth();
     const labs = await findExpiredActiveLabs(nowIso);
     if (!labs.length) {
       logger.debug('[LABS][CLEANUP] No expired active labs found.');
@@ -195,24 +134,25 @@ async function cleanupExpiredLabs() {
     logger.info(`[LABS][CLEANUP] Found ${labs.length} expired lab(s).`);
     for (const lab of labs) {
       try {
-        const accessToken = decryptLabCleanupToken(lab);
+        const accessToken = null;
         const cleanupResult = await destroyExpiredCodespace(lab, accessToken);
         await removeLabDocument(lab, 'expired', {
           github_cleanup_warning: cleanupResult.warning,
         });
+        logger.info('[LABS] cleanup completed', { labId: lab._id });
         logger.info('[LABS][CLEANUP] cleanup completed successfully');
       } catch (err) {
-        logger.error(`[LABS][CLEANUP] Failed to cleanup lab ${lab._id}:`, cloudantErrorDetails(err));
+        logger.error(`[LABS][CLEANUP] Failed to cleanup lab ${lab._id}:`, errorDetails(err));
         try {
-          await softDeleteLabDocument(lab, 'cleanup_failed', { cleanup_error: cloudantErrorDetails(err) });
+          await softDeleteLabDocument(lab, 'cleanup_failed', { cleanup_error: errorDetails(err) });
           logger.debug(`[LABS][CLEANUP] Released active lock for failed cleanup lab ${lab._id}.`);
         } catch (markErr) {
-          logger.error(`[LABS][CLEANUP] Failed to release active lock for lab ${lab._id}:`, cloudantErrorDetails(markErr));
+          logger.error(`[LABS][CLEANUP] Failed to release active lock for lab ${lab._id}:`, errorDetails(markErr));
         }
       }
     }
   } catch (err) {
-    logger.error('[LABS][CLEANUP] Cleanup tick failed:', cloudantErrorDetails(err));
+    logger.error('[LABS][CLEANUP] Cleanup tick failed:', errorDetails(err));
   } finally {
     cleanupRunning = false;
   }

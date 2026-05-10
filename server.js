@@ -38,8 +38,10 @@ const friendsRoutes = require('./routes/friends');
 const tutorialsRoutes = require('./routes/tutorials');
 const orionRoutes = require('./routes/orion');
 const discussionsRoutes = require('./routes/discussions');
+const brainstormRoutes = require('./routes/brainstorm');
 const firebaseService = require('./services/firebaseService');
 const { attachDiscussionSocketHandlers } = require('./sockets/discussions');
+const { attachWhiteboardSocketHandlers } = require('./sockets/whiteboard');
 const { startLabCleanupService, stopLabCleanupService } = require('./services/labCleanupService');
 
 const app = express();
@@ -139,6 +141,7 @@ io.on('connection', (socket) => {
 
   // Phase 4: discussion sockets (channels/messages/presence)
   attachDiscussionSocketHandlers({ io, socket, cloudant: require('./services/cloudantClient') });
+  attachWhiteboardSocketHandlers({ io, socket });
 });
 
 // ─────────────────────────────────────────────
@@ -626,6 +629,7 @@ app.use('/api/voice', voiceRoutes);
 app.use('/api/tutorials', tutorialsRoutes);
 app.use('/api/orion', orionRoutes);
 app.use('/api/discussions', discussionsRoutes);
+app.use('/api/brainstorm', brainstormRoutes);
 
 // ─────────────────────────────────────────────
 // 404 + Error Handlers

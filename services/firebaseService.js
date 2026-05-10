@@ -162,6 +162,14 @@ function createUnavailableFirebaseService() {
     incrementUnreadStates: async () => {},
     getUnreadStates: async () => [],
     debugFirestoreWrite: unavailable,
+    createLab: unavailable,
+    updateLab: unavailable,
+    deleteLab: unavailable,
+    getLabById: async () => null,
+    getUserLabs: async () => [],
+    getExpiredActiveLabs: async () => [],
+    createLabSession: unavailable,
+    updateLabSession: unavailable,
     db: null,
     firestore: null,
     app: null,
@@ -258,6 +266,223 @@ async function getDocument(collectionName, docId) {
   if (!firestore || !docId) return null;
   const snapshot = await firestore.collection(collectionName).doc(docId).get();
   return safeDocData(snapshot);
+}
+
+function normalizeLabDocument(lab, id) {
+  const labId = id || lab?._id || lab?.id;
+  const createdAt = lab?.createdAt || lab?.created_at || new Date().toISOString();
+  const updatedAt = lab?.updatedAt || lab?.updated_at || createdAt;
+  const deletedAt = lab?.deletedAt || lab?.deleted_at || null;
+  const expiresAt = lab?.expiresAt || lab?.expires_at || null;
+  const repoOwner = lab?.repoOwner || lab?.repo_owner || null;
+  const repoNameOnly = lab?.repoName || lab?.repo_name_only || null;
+  const repoFullName = lab?.repo || lab?.repo_name || lab?.repository || (
+    repoOwner && repoNameOnly ? `${repoOwner}/${repoNameOnly}` : null
+  );
+  const codespaceName = lab?.codespaceName || lab?.codespace_name || null;
+  const webUrl = lab?.webUrl || lab?.web_url || null;
+  const status = lab?.status || 'active';
+
+  return {
+    ...lab,
+    _id: labId,
+    id: labId,
+    userId: lab?.userId || lab?.user_id,
+    user_id: lab?.userId || lab?.user_id,
+    repo: repoFullName,
+    repo_url: lab?.repoUrl || lab?.repo_url || null,
+    repoUrl: lab?.repoUrl || lab?.repo_url || null,
+    repoOwner,
+    repo_owner: repoOwner,
+    repoName: repoNameOnly || repoFullName,
+    repo_name: repoFullName,
+    repository: repoFullName,
+    visibility: lab?.visibility || lab?.repo_visibility || null,
+    repo_visibility: lab?.visibility || lab?.repo_visibility || null,
+    repo_private: Boolean(lab?.repo_private),
+    repo_default_branch: lab?.repo_default_branch || lab?.defaultBranch || null,
+    codespaceName,
+    codespace_name: codespaceName,
+    codespaceId: lab?.codespaceId || lab?.codespace_id || null,
+    codespace_id: lab?.codespaceId || lab?.codespace_id || null,
+    webUrl,
+    web_url: webUrl,
+    status,
+    active: status === 'active',
+    createdAt,
+    created_at: createdAt,
+    updatedAt,
+    updated_at: updatedAt,
+    expiresAt,
+    expires_at: expiresAt,
+    deletedAt,
+    deleted_at: deletedAt,
+    githubUsername: lab?.githubUsername || lab?.github_username || null,
+    github_username: lab?.githubUsername || lab?.github_username || null,
+    githubUserId: lab?.githubUserId || lab?.github_user_id || null,
+    github_user_id: lab?.githubUserId || lab?.github_user_id || null,
+    branch: lab?.branch || lab?.repo_ref || null,
+    repo_ref: lab?.branch || lab?.repo_ref || null,
+    connectionType: lab?.connectionType || lab?.connection_type || 'github_codespaces',
+    connection_type: lab?.connectionType || lab?.connection_type || 'github_codespaces',
+    lastOpenedAt: lab?.lastOpenedAt || lab?.last_opened_at || null,
+    last_opened_at: lab?.lastOpenedAt || lab?.last_opened_at || null,
+  };
+}
+
+function normalizeLabSessionDocument(session, id) {
+  const sessionId = id || session?._id || session?.id;
+  const startedAt = session?.startedAt || session?.started_at || new Date().toISOString();
+  const endedAt = session?.endedAt || session?.ended_at || null;
+
+  return {
+    ...session,
+    _id: sessionId,
+    id: sessionId,
+    labId: session?.labId || session?.lab_id,
+    lab_id: session?.labId || session?.lab_id,
+    userId: session?.userId || session?.user_id,
+    user_id: session?.userId || session?.user_id,
+    startedAt,
+    started_at: startedAt,
+    endedAt,
+    ended_at: endedAt,
+    status: session?.status || 'active',
+  };
+}
+
+async function createLab(lab) {
+  if (!firestore) throw new Error('Firebase is not configured');
+  const payload = normalizeLabDocument(lab);
+  logger.info('[LABS][FIRESTORE] creating lab', { labId: payload.id, userId: payload.userId });
+  return createDocument('labs', payload, payload.id);
+}
+
+async function updateLab(labId, updates) {
+  if (!firestore) throw new Error('Firebase is not configured');
+  const current = await getDocument('labs', labId);
+  const payload = normalizeLabDocument({ ...(current || {}), ...updates }, labId);
+  logger.debug('[LABS][FIRESTORE] updating lab', { labId, status: payload.status });
+  await firestore.collection('labs').doc(labId).set(payload, { merge: true });
+  return payload;
+}
+
+async function deleteLab(labId, updates = {}) {
+  const now = new Date().toISOString();
+  return updateLab(labId, {
+    ...updates,
+    status: 'deleted',
+    active: false,
+    deletedAt: updates.deletedAt || updates.deleted_at || now,
+    deleted_at: updates.deletedAt || updates.deleted_at || now,
+  });
+}
+
+async function getLabById(labId) {
+  const lab = await getDocument('labs', labId);
+  return lab ? normalizeLabDocument(lab, labId) : null;
+}
+
+async function getUserLabs(userId, options = {}) {
+  if (!firestore || !userId) return [];
+  const limit = Math.max(1, Math.min(100, Number(options.limit || 100)));
+  const status = options.status || null;
+  const onlyActive = options.active === true;
+  const byId = new Map();
+
+  const builders = [];
+  builders.push(() => {
+    let query = firestore.collection('labs').where('userId', '==', userId);
+    if (status) query = query.where('status', '==', status);
+    if (onlyActive) query = query.where('active', '==', true);
+    return query.orderBy('createdAt', 'desc').limit(limit);
+  });
+  builders.push(() => {
+    let query = firestore.collection('labs').where('user_id', '==', userId);
+    if (status) query = query.where('status', '==', status);
+    if (onlyActive) query = query.where('active', '==', true);
+    return query.orderBy('created_at', 'desc').limit(limit);
+  });
+  builders.push(() => {
+    let query = firestore.collection('labs').where('userId', '==', userId);
+    if (status) query = query.where('status', '==', status);
+    if (onlyActive) query = query.where('active', '==', true);
+    return query.limit(limit);
+  });
+  builders.push(() => firestore.collection('labs').where('userId', '==', userId).limit(limit));
+  builders.push(() => firestore.collection('labs').where('user_id', '==', userId).limit(limit));
+
+  for (const buildQuery of builders) {
+    try {
+      const snapshot = await buildQuery().get();
+      for (const doc of snapshot.docs) {
+        const data = normalizeLabDocument(safeDocData(doc), doc.id);
+        const statusMatches = !status || data.status === status;
+        const activeMatches = !onlyActive || data.active !== false;
+        if ((data.userId === userId || data.user_id === userId) && statusMatches && activeMatches) {
+          byId.set(data.id, data);
+        }
+      }
+      if (byId.size > 0) break;
+    } catch (err) {
+      logger.warn('[LABS][FIRESTORE] lab query fallback used:', err.message);
+    }
+  }
+
+  return Array.from(byId.values())
+    .sort((a, b) => String(b.createdAt || b.created_at || '').localeCompare(String(a.createdAt || a.created_at || '')))
+    .slice(0, limit);
+}
+
+async function getExpiredActiveLabs(nowIso, limit = 100) {
+  if (!firestore) return [];
+  const safeLimit = Math.max(1, Math.min(100, Number(limit || 100)));
+  const byId = new Map();
+  const builders = [
+    () => firestore
+      .collection('labs')
+      .where('status', '==', 'active')
+      .where('active', '==', true)
+      .where('expiresAt', '<=', nowIso)
+      .limit(safeLimit),
+    () => firestore
+      .collection('labs')
+      .where('status', '==', 'active')
+      .where('active', '==', true)
+      .where('expires_at', '<=', nowIso)
+      .limit(safeLimit),
+  ];
+
+  for (const buildQuery of builders) {
+    try {
+      const snapshot = await buildQuery().get();
+      for (const doc of snapshot.docs) {
+        byId.set(doc.id, normalizeLabDocument(safeDocData(doc), doc.id));
+      }
+    } catch (err) {
+      logger.warn('[LABS][FIRESTORE] expired lab query fallback used:', err.message);
+    }
+  }
+
+  return Array.from(byId.values()).filter((lab) => {
+    const expiresAt = lab.expiresAt || lab.expires_at;
+    return lab.status === 'active' && lab.active !== false && expiresAt && new Date(expiresAt).getTime() <= Date.now();
+  });
+}
+
+async function createLabSession(session) {
+  if (!firestore) throw new Error('Firebase is not configured');
+  const payload = normalizeLabSessionDocument(session);
+  logger.debug('[LABS][FIRESTORE] creating lab session', { sessionId: payload.id, labId: payload.labId });
+  return createDocument('lab_sessions', payload, payload.id);
+}
+
+async function updateLabSession(sessionId, updates) {
+  if (!firestore) throw new Error('Firebase is not configured');
+  const current = await getDocument('lab_sessions', sessionId);
+  const payload = normalizeLabSessionDocument({ ...(current || {}), ...updates }, sessionId);
+  await firestore.collection('lab_sessions').doc(sessionId).set(payload, { merge: true });
+  return payload;
 }
 
 function realtimeQuery(collectionName, constraints = {}, onSnapshot, onError) {
@@ -708,6 +933,14 @@ module.exports = hasFirebaseCredentials && firestore
       incrementUnreadStates,
       getUnreadStates,
       debugFirestoreWrite,
+      createLab,
+      updateLab,
+      deleteLab,
+      getLabById,
+      getUserLabs,
+      getExpiredActiveLabs,
+      createLabSession,
+      updateLabSession,
       db: realtimeDb,
       firestore,
       app: firebaseApp,

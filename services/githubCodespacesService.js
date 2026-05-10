@@ -6,15 +6,50 @@ const GITHUB_API_BASE = 'https://api.github.com';
 const GITHUB_API_VERSION = process.env.GITHUB_API_VERSION || '2026-03-10';
 
 function githubHeaders(accessToken) {
-  return {
+  const headers = {
     Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${accessToken}`,
     'X-GitHub-Api-Version': GITHUB_API_VERSION,
   };
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  return headers;
 }
 
 function apiErrorMessage(err) {
   return err.response?.data?.message || err.message || 'GitHub API request failed';
+}
+
+function classifyGitHubError(err, fallbackCode = 'GITHUB_ERROR') {
+  const status = err.response?.status || err.statusCode;
+  const message = apiErrorMessage(err);
+  const documentationUrl = err.response?.data?.documentation_url || '';
+
+  if (status === 401) {
+    return { statusCode: 401, code: 'GITHUB_AUTH_REQUIRED', message: 'Connect GitHub before launching this lab.' };
+  }
+  if (status === 404) {
+    return { statusCode: 404, code: 'REPO_NOT_FOUND', message: 'Repository not found or inaccessible.' };
+  }
+  if (status === 403 && /rate limit|api rate limit|secondary rate/i.test(message)) {
+    return { statusCode: 429, code: 'GITHUB_RATE_LIMIT', message: 'GitHub rate limit reached. Please retry later.' };
+  }
+  if (
+    status === 403 &&
+    (/saml|single sign-on|sso|oauth app access restricted|resource protected by organization/i.test(message) ||
+      /saml|sso|oauth_app_access_restrictions/i.test(documentationUrl))
+  ) {
+    return { statusCode: 403, code: 'ORG_RESTRICTED', message: 'Organization approval required' };
+  }
+  if (status === 403 && /codespaces.*disabled|codespaces is disabled|disabled for this repository/i.test(message)) {
+    return { statusCode: 403, code: 'CODESPACES_UNAVAILABLE', message: 'Codespaces is unavailable for this repository.' };
+  }
+  if (status === 403) {
+    return { statusCode: 403, code: 'REPO_ACCESS_DENIED', message: message || 'GitHub repository access denied.' };
+  }
+  if (status === 422 && /codespace|codespaces/i.test(message)) {
+    return { statusCode: 422, code: 'CODESPACES_UNAVAILABLE', message: message || 'Codespaces is unavailable for this repository.' };
+  }
+
+  return { statusCode: status || 502, code: fallbackCode, message };
 }
 
 function isRecoverableCodespaceError(err) {
@@ -42,11 +77,14 @@ function recoverableCodespaceResult(action, codespaceName, err) {
   };
 }
 
-function parsePublicGitHubRepoUrl(repoUrl) {
+function parseGitHubRepoUrl(repoUrl) {
   if (typeof repoUrl !== 'string') return null;
 
-  const trimmed = repoUrl.trim();
+  let trimmed = repoUrl.trim();
   if (trimmed.length > 300) return null;
+  if (/^github\.com\//i.test(trimmed)) {
+    trimmed = `https://${trimmed}`;
+  }
 
   let parsed;
   try {
@@ -72,12 +110,21 @@ function parsePublicGitHubRepoUrl(repoUrl) {
 
   if (!safeSegment.test(owner) || !safeSegment.test(repo)) return null;
 
+  let ref = null;
+  if ((parts[2] === 'tree' || parts[2] === 'blob') && parts[3]) {
+    ref = parts.slice(3).join('/');
+  }
+
   return {
     owner,
     repo,
+    fullName: `${owner}/${repo}`,
+    ref,
     normalizedUrl: `https://github.com/${owner}/${repo}`,
   };
 }
+
+const parsePublicGitHubRepoUrl = parseGitHubRepoUrl;
 
 async function fetchRepositoryDetails(accessToken, repoRef) {
   logger.debug(`[LABS][GITHUB] Fetching repository ${repoRef.owner}/${repoRef.repo}`);
@@ -88,16 +135,60 @@ async function fetchRepositoryDetails(accessToken, repoRef) {
     );
     return response.data;
   } catch (err) {
-    const status = err.response?.status;
-    const message = apiErrorMessage(err);
-    logger.error(`[LABS][GITHUB] Repository fetch failed (${status || 'no-status'}): ${message}`);
-    const wrapped = new Error(status === 404 ? 'Repository not found or inaccessible.' : message);
-    wrapped.statusCode = status === 404 ? 404 : 502;
+    const classified = classifyGitHubError(err, 'REPO_VALIDATION_FAILED');
+    logger.warn('[LABS][GITHUB] Repository fetch failed', {
+      status: classified.statusCode,
+      code: classified.code,
+      repo: repoRef.fullName || `${repoRef.owner}/${repoRef.repo}`,
+    });
+    const wrapped = new Error(classified.message);
+    wrapped.statusCode = classified.statusCode;
+    wrapped.code = classified.code;
+    throw wrapped;
+  }
+}
+
+async function listUserRepositories(accessToken, options = {}) {
+  if (!accessToken) {
+    const err = new Error('Connect GitHub before listing repositories.');
+    err.statusCode = 401;
+    err.code = 'GITHUB_AUTH_REQUIRED';
+    throw err;
+  }
+
+  const perPage = Math.max(1, Math.min(100, Number(options.perPage || 100)));
+  const page = Math.max(1, Math.min(10, Number(options.page || 1)));
+  try {
+    const response = await axios.get(`${GITHUB_API_BASE}/user/repos`, {
+      headers: githubHeaders(accessToken),
+      timeout: 15000,
+      params: {
+        visibility: 'all',
+        affiliation: 'owner,collaborator,organization_member',
+        sort: 'updated',
+        direction: 'desc',
+        per_page: perPage,
+        page,
+      },
+    });
+    return response.data;
+  } catch (err) {
+    const classified = classifyGitHubError(err, 'GITHUB_REPOS_FAILED');
+    const wrapped = new Error(classified.message);
+    wrapped.statusCode = classified.statusCode;
+    wrapped.code = classified.code;
     throw wrapped;
   }
 }
 
 async function createCodespace(accessToken, repoRef, options = {}) {
+  if (!accessToken) {
+    const err = new Error('Connect GitHub before launching this lab.');
+    err.statusCode = 401;
+    err.code = 'GITHUB_AUTH_REQUIRED';
+    throw err;
+  }
+
   logger.info(`[LABS][GITHUB] Creating codespace for ${repoRef.owner}/${repoRef.repo}`);
   try {
     const body = {
@@ -113,11 +204,19 @@ async function createCodespace(accessToken, repoRef, options = {}) {
     );
     return response.data;
   } catch (err) {
-    const status = err.response?.status;
-    const message = apiErrorMessage(err);
-    logger.error(`[LABS][GITHUB] Codespace create failed (${status || 'no-status'}): ${message}`);
-    const wrapped = new Error(message);
-    wrapped.statusCode = status === 401 ? 401 : status === 403 ? 403 : 502;
+    const classified = classifyGitHubError(err, 'CODESPACE_CREATE_FAILED');
+    if (classified.code === 'ORG_RESTRICTED') {
+      logger.info('[LABS] org restriction detected', { repo: repoRef.fullName || `${repoRef.owner}/${repoRef.repo}` });
+    } else {
+      logger.warn('[LABS][GITHUB] Codespace create failed', {
+        status: classified.statusCode,
+        code: classified.code,
+        repo: repoRef.fullName || `${repoRef.owner}/${repoRef.repo}`,
+      });
+    }
+    const wrapped = new Error(classified.message);
+    wrapped.statusCode = classified.statusCode;
+    wrapped.code = classified.code;
     throw wrapped;
   }
 }
@@ -254,7 +353,9 @@ function decryptAccessToken(encryptedToken) {
 }
 
 module.exports = {
+  parseGitHubRepoUrl,
   parsePublicGitHubRepoUrl,
+  listUserRepositories,
   fetchRepositoryDetails,
   fetchCodespace,
   createCodespace,

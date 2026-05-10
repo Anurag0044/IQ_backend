@@ -6,7 +6,9 @@ const {
 } = require('../middleware/auth');
 const {
   ensureGitHubOAuthConfigured,
+  getGitHubSession,
 } = require('../middleware/githubAuth');
+const { listUserRepositories } = require('../services/githubCodespacesService');
 
 const router = express.Router();
 
@@ -55,12 +57,56 @@ router.get('/login',
   (req, res, next) => {
     console.log('[GITHUB_AUTH] Starting GitHub OAuth connection.');
     return passport.authenticate('github-labs', {
-      scope: ['codespace', 'read:user'],
+      scope: ['codespace', 'repo', 'read:user'],
       session: false,
       state: true,
     })(req, res, next);
   }
 );
+
+router.get('/repos', ensureAuthenticated, async (req, res) => {
+  const github = getGitHubSession(req);
+  if (!github?.accessToken) {
+    return res.status(401).json({
+      success: false,
+      code: 'GITHUB_AUTH_REQUIRED',
+      error: 'GitHub login required.',
+      message: 'Connect GitHub before listing repositories.',
+    });
+  }
+
+  try {
+    const repos = await listUserRepositories(github.accessToken, {
+      page: req.query.page,
+      perPage: req.query.per_page || req.query.perPage,
+    });
+
+    return res.json({
+      success: true,
+      repos: repos.map((repo) => ({
+        name: repo.name,
+        full_name: repo.full_name,
+        visibility: repo.visibility || (repo.private ? 'private' : 'public'),
+        private: Boolean(repo.private),
+        default_branch: repo.default_branch,
+        updated_at: repo.updated_at,
+        html_url: repo.html_url,
+        owner: {
+          login: repo.owner?.login || null,
+          avatar_url: repo.owner?.avatar_url || null,
+          type: repo.owner?.type || null,
+        },
+      })),
+    });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      code: err.code || 'GITHUB_REPOS_FAILED',
+      error: err.message || 'Failed to list GitHub repositories.',
+      message: err.message || 'Failed to list GitHub repositories.',
+    });
+  }
+});
 
 router.get('/callback',
   ensureGitHubOAuthConfigured,

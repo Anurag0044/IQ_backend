@@ -1,26 +1,22 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const cloudant = require('../services/cloudantClient');
 const { ensureAuthenticated } = require('../middleware/auth');
 const {
-  ensureGitHubConnected,
   getGitHubSession,
   getAuthenticatedUserId,
 } = require('../middleware/githubAuth');
 const {
-  parsePublicGitHubRepoUrl,
+  parseGitHubRepoUrl,
   fetchRepositoryDetails,
   fetchCodespace,
   createCodespace,
   stopCodespace,
   deleteCodespace,
-  encryptAccessToken,
-  decryptAccessToken,
 } = require('../services/githubCodespacesService');
+const firebaseService = require('../services/firebaseService');
 const logger = require('../utils/logger');
 
 const router = express.Router();
-const DB_NAME = 'lab_sessions';
 const LAB_TTL_MINUTES = Number(process.env.LAB_TTL_MINUTES || 30);
 const LAB_NAME_MAX_LENGTH = 48;
 const NON_BLOCKING_LAB_STATUSES = new Set(['deleted', 'expired', 'cleanup_failed']);
@@ -31,18 +27,24 @@ function apiSuccess(res, status, payload) {
   return res.status(status).json({ success: true, ...payload });
 }
 
-function apiError(res, status, error, message) {
+function apiError(res, status, error, message, code) {
   return res.status(status).json({
     success: false,
+    code,
     error,
     message: message || error,
   });
 }
 
-function cloudantErrorDetails(err) {
-  const status = err.status || err.statusCode || err.code || 'no-status';
-  const message = err.message || 'Cloudant request failed';
-  return `${status}: ${message}`;
+function labError(res, err, fallbackMessage = 'Failed to process lab request.') {
+  const status = err.statusCode || err.status || 500;
+  return apiError(
+    res,
+    status,
+    err.message || fallbackMessage,
+    err.message || fallbackMessage,
+    err.code || 'LAB_REQUEST_FAILED'
+  );
 }
 
 function sanitizeLab(lab) {
@@ -55,29 +57,20 @@ function sanitizeLab(lab) {
   } = lab;
 
   if (cleanup_error) safe.cleanup_error = cleanup_error;
-  safe.display_name = lab.codespace_display_name || lab.lab_name || lab.codespace_name || null;
+  safe.display_name = lab.codespace_display_name || lab.displayName || lab.lab_name || lab.codespaceName || lab.codespace_name || null;
+  safe.labId = lab._id || lab.id;
+  safe.codespaceName = lab.codespaceName || lab.codespace_name || null;
+  safe.webUrl = lab.webUrl || lab.web_url || null;
+  safe.expiresAt = lab.expiresAt || lab.expires_at || null;
   return safe;
 }
 
 async function findLabsForUser(userId) {
-  const response = await cloudant.postFind({
-    db: DB_NAME,
-    selector: { user_id: userId },
-    limit: 100,
-  });
-  return response.result.docs || [];
+  return firebaseService.getUserLabs(userId, { limit: 100 });
 }
 
 async function findActiveLabsForUser(userId) {
-  const response = await cloudant.postFind({
-    db: DB_NAME,
-    selector: {
-      user_id: userId,
-      status: 'active',
-    },
-    limit: 100,
-  });
-  return response.result.docs || [];
+  return firebaseService.getUserLabs(userId, { status: 'active', active: true, limit: 100 });
 }
 
 async function findActiveLabForUser(userId) {
@@ -86,23 +79,13 @@ async function findActiveLabForUser(userId) {
 }
 
 async function findLabForUser(userId, labIdOrCodespaceName) {
-  const response = await cloudant.postFind({
-    db: DB_NAME,
-    selector: {
-      user_id: userId,
-      $or: [
-        { _id: labIdOrCodespaceName },
-        { codespace_name: labIdOrCodespaceName },
-      ],
-    },
-    limit: 1,
-  });
-  return (response.result.docs || [])[0] || null;
-}
-
-async function fetchLabDocument(labId) {
-  const response = await cloudant.getDocument({ db: DB_NAME, docId: labId });
-  return response.result;
+  const direct = await firebaseService.getLabById(labIdOrCodespaceName);
+  if (direct && (direct.userId === userId || direct.user_id === userId)) return direct;
+  const labs = await findLabsForUser(userId);
+  return labs.find((lab) =>
+    lab.codespaceName === labIdOrCodespaceName ||
+    lab.codespace_name === labIdOrCodespaceName
+  ) || null;
 }
 
 function isExpired(lab) {
@@ -174,146 +157,50 @@ function resolveLabName(input, repoRef) {
 }
 
 async function markLabStatus(lab, status, extra = {}) {
-  const updated = {
-    ...lab,
+  return firebaseService.updateLab(lab._id || lab.id, {
     ...extra,
     status,
     active: status === 'active',
     updated_at: new Date().toISOString(),
-  };
-
-  await cloudant.putDocument({
-    db: DB_NAME,
-    docId: lab._id,
-    document: updated,
   });
-
-  return updated;
-}
-
-function getLabDeletionToken(req, lab) {
-  const sessionToken = getGitHubSession(req)?.accessToken;
-  if (sessionToken) return sessionToken;
-
-  try {
-    return decryptAccessToken(lab.github_access_token_encrypted);
-  } catch (err) {
-    logger.warn(`[LABS] Could not decrypt stored GitHub token for lab ${lab._id}: ${err.message}`);
-    return null;
-  }
 }
 
 async function softDeleteLabDocument(lab, status, extra = {}) {
-  const freshLab = await fetchLabDocument(lab._id).catch((err) => {
-    if (err.status === 404 || err.statusCode === 404) return null;
-    throw err;
-  });
-
-  if (!freshLab) {
-    logger.debug(`[LABS][CLOUDANT] lab document already removed: ${lab._id}`);
-    return {
-      ...lab,
-      ...extra,
-      status,
-      active: false,
-      codespace_name: null,
-      web_url: null,
-      session_data: null,
-      codespace_session: null,
-      github_access_token_encrypted: null,
-      deleted_at: status === 'deleted' ? new Date().toISOString() : lab.deleted_at,
-      updated_at: new Date().toISOString(),
-    };
-  }
-
+  const now = new Date().toISOString();
   const updated = {
-    ...freshLab,
+    ...lab,
     ...extra,
     status,
     active: false,
     codespace_name: null,
+    codespaceName: null,
     web_url: null,
+    webUrl: null,
     session_data: null,
     codespace_session: null,
-    github_access_token_encrypted: null,
     cleanup_error: extra.cleanup_error || undefined,
-    deleted_at: status === 'deleted' ? new Date().toISOString() : freshLab.deleted_at,
-    expired_at: status === 'expired' ? new Date().toISOString() : freshLab.expired_at,
-    updated_at: new Date().toISOString(),
+    deleted_at: status === 'deleted' ? now : lab.deleted_at,
+    deletedAt: status === 'deleted' ? now : lab.deletedAt,
+    expired_at: status === 'expired' ? now : lab.expired_at,
+    expiresAt: status === 'expired' ? lab.expiresAt : lab.expiresAt,
+    updated_at: now,
+    updatedAt: now,
   };
 
-  await cloudant.putDocument({
-    db: DB_NAME,
-    docId: freshLab._id,
-    document: updated,
-  });
-
-  logger.debug('[LABS][CLOUDANT] soft delete fallback used');
+  const saved = status === 'deleted'
+    ? await firebaseService.deleteLab(lab._id || lab.id, updated)
+    : await firebaseService.updateLab(lab._id || lab.id, updated);
+  logger.debug('[LABS][FIRESTORE] lab soft-deleted');
   logger.debug('[LABS] active lab released');
-  return updated;
+  return saved;
 }
 
 async function removeLabDocument(lab, status = 'deleted', extra = {}) {
-  logger.debug('[LABS][CLOUDANT] removing lab document');
-  logger.debug('[LABS][CLOUDANT] deleting lab document');
-
-  let lastDeleteError = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const freshLab = await fetchLabDocument(lab._id);
-      await cloudant.deleteDocument({
-        db: DB_NAME,
-        docId: freshLab._id,
-        rev: freshLab._rev,
-      });
-
-      logger.debug('[LABS][CLOUDANT] lab document removed');
-      logger.debug('[LABS] active lab released');
-      return {
-        ...freshLab,
-        ...extra,
-        status,
-        active: false,
-        codespace_name: null,
-        web_url: null,
-        session_data: null,
-        codespace_session: null,
-        github_access_token_encrypted: null,
-        deleted_at: status === 'deleted' ? new Date().toISOString() : freshLab.deleted_at,
-        updated_at: new Date().toISOString(),
-      };
-    } catch (err) {
-      if (err.status === 404 || err.statusCode === 404) {
-        logger.debug(`[LABS][CLOUDANT] lab document already removed: ${lab._id}`);
-        logger.debug('[LABS] active lab released');
-        return {
-          ...lab,
-          ...extra,
-          status,
-          active: false,
-          codespace_name: null,
-          web_url: null,
-          session_data: null,
-          codespace_session: null,
-          github_access_token_encrypted: null,
-          deleted_at: status === 'deleted' ? new Date().toISOString() : lab.deleted_at,
-          updated_at: new Date().toISOString(),
-        };
-      }
-
-      lastDeleteError = err;
-      logger.warn(`[LABS][CLOUDANT] hard delete attempt ${attempt} failed for ${lab._id}: ${cloudantErrorDetails(err)}`);
-    }
-  }
-
-  return softDeleteLabDocument(lab, status, {
-    ...extra,
-    cleanup_error: extra.cleanup_error || cloudantErrorDetails(lastDeleteError),
-  });
+  return softDeleteLabDocument(lab, status, extra);
 }
 
 async function destroyCodespaceForLab(accessToken, lab) {
-  const codespaceName = lab.codespace_name;
+  const codespaceName = lab.codespaceName || lab.codespace_name;
 
   if (!codespaceName) {
     logger.warn(`[LABS] Lab ${lab._id} has no codespace name; skipping GitHub cleanup.`);
@@ -389,13 +276,13 @@ async function destroyCodespaceForLab(accessToken, lab) {
 }
 
 async function destroyLabSession(req, lab, status = 'deleted') {
-  const accessToken = getLabDeletionToken(req, lab);
+  const accessToken = getGitHubSession(req)?.accessToken || null;
   let githubCleanup = null;
 
   try {
     githubCleanup = await destroyCodespaceForLab(accessToken, lab);
   } catch (err) {
-    logger.warn(`[LABS] GitHub cleanup failed for lab ${lab._id}; clearing Cloudant session anyway: ${err.message}`);
+    logger.warn(`[LABS] GitHub cleanup failed for lab ${lab._id}; clearing Firestore session anyway: ${err.message}`);
     githubCleanup = { warning: err.message };
   }
 
@@ -403,6 +290,15 @@ async function destroyLabSession(req, lab, status = 'deleted') {
   const updated = await removeLabDocument(lab, status, {
     [timestampField]: new Date().toISOString(),
     github_cleanup_warning: githubCleanup?.warning || undefined,
+  });
+
+  await firebaseService.updateLabSession(lab.sessionId || lab.session_id || (lab._id || lab.id), {
+    labId: lab._id || lab.id,
+    userId: lab.userId || lab.user_id,
+    status,
+    endedAt: new Date().toISOString(),
+  }).catch((err) => {
+    logger.warn('[LABS][FIRESTORE] Failed to close lab session:', err.message);
   });
 
   logger.info('[LABS] lab fully destroyed');
@@ -428,7 +324,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.post('/create', ensureGitHubConnected, async (req, res) => {
+router.post('/create', async (req, res) => {
   const userId = getAuthenticatedUserId(req);
   const githubSession = getGitHubSession(req);
 
@@ -436,9 +332,15 @@ router.post('/create', ensureGitHubConnected, async (req, res) => {
 
   try {
     logger.debug('[LABS] checking active lab state');
-    const repoRef = parsePublicGitHubRepoUrl(req.body?.repoUrl);
+    const repoRef = parseGitHubRepoUrl(req.body?.repoUrl);
     if (!repoRef) {
-      return apiError(res, 400, 'Invalid GitHub repo URL.', 'Use a public HTTPS GitHub URL like https://github.com/owner/repo.');
+      return apiError(
+        res,
+        400,
+        'Invalid GitHub repo URL.',
+        'Use a valid HTTPS GitHub repository URL like https://github.com/owner/repo.',
+        'INVALID_REPO_URL'
+      );
     }
     const resolvedName = resolveLabName(req.body?.labName, repoRef);
     logger.debug(`[LABS] custom lab name accepted: ${resolvedName.displayName}`);
@@ -446,54 +348,160 @@ router.post('/create', ensureGitHubConnected, async (req, res) => {
     const activeLabs = await findActiveLabsForUser(userId);
     const blockingActiveLab = activeLabs.find((lab) => isBlockingActiveLab(lab) && !isExpired(lab));
     if (blockingActiveLab) {
-      return apiError(res, 409, 'You already have an active lab.', 'Delete the current lab or wait for it to expire.');
+      logger.warn('[LABS] duplicate active lab blocked', { userId, labId: blockingActiveLab._id || blockingActiveLab.id });
+      return apiError(
+        res,
+        409,
+        'You already have an active lab.',
+        'Delete the current lab or wait for it to expire.',
+        'DUPLICATE_ACTIVE_LAB'
+      );
     }
 
     await releaseExpiredActiveLabs(activeLabs);
 
-    const repo = await fetchRepositoryDetails(githubSession.accessToken, repoRef);
-    if (repo.private) {
-      return apiError(res, 403, 'Private repositories are not allowed.');
+    let repo;
+    try {
+      repo = await fetchRepositoryDetails(githubSession?.accessToken || null, repoRef);
+    } catch (err) {
+      if (!githubSession?.accessToken && err.code === 'REPO_NOT_FOUND') {
+        return apiError(
+          res,
+          401,
+          'GitHub login required.',
+          'Connect GitHub to launch private or restricted repositories.',
+          'PRIVATE_REPO_AUTH_REQUIRED'
+        );
+      }
+      return labError(res, err, 'Repository validation failed.');
     }
 
-    logger.info('[LABS] creating new lab');
+    if (!githubSession?.accessToken) {
+      return apiError(
+        res,
+        401,
+        'GitHub login required.',
+        repo.private
+          ? 'Connect GitHub to launch private repositories.'
+          : 'Connect GitHub to create a Codespace for this repository.',
+        'GITHUB_AUTH_REQUIRED'
+      );
+    }
+
+    const requestedRef = String(req.body?.branch || req.body?.ref || repoRef.ref || repo.default_branch || '').trim();
+    const codespaceRef = requestedRef || repo.default_branch || undefined;
+
+    logger.info('[LABS] creating codespace', {
+      repo: repo.full_name,
+      visibility: repo.visibility || (repo.private ? 'private' : 'public'),
+    });
     const codespace = await createCodespace(githubSession.accessToken, repoRef, {
       idleTimeoutMinutes: LAB_TTL_MINUTES,
       displayName: resolvedName.displayName,
+      ref: codespaceRef,
     });
-    logger.info('[LABS] codespace created successfully');
+    logger.info('[LABS] codespace ready', { repo: repo.full_name, codespaceName: codespace.name });
 
     const createdAt = new Date();
     const expiresAt = new Date(createdAt.getTime() + LAB_TTL_MINUTES * 60 * 1000);
+    const labId = uuidv4();
+    const sessionId = uuidv4();
     const lab = {
-      _id: uuidv4(),
+      _id: labId,
+      id: labId,
       user_id: userId,
+      userId,
+      session_id: sessionId,
+      sessionId,
       lab_name: resolvedName.labName,
       codespace_display_name: codespace.display_name || resolvedName.displayName,
+      displayName: codespace.display_name || resolvedName.displayName,
       repo_url: repoRef.normalizedUrl,
+      repoUrl: repoRef.normalizedUrl,
+      repo: repo.full_name,
       repo_name: repo.full_name,
+      repoName: repo.name || repoRef.repo,
+      repository: repo.full_name,
+      repo_owner: repo.owner?.login || repoRef.owner,
+      repoOwner: repo.owner?.login || repoRef.owner,
+      repo_visibility: repo.visibility || (repo.private ? 'private' : 'public'),
+      visibility: repo.visibility || (repo.private ? 'private' : 'public'),
+      repo_private: Boolean(repo.private),
+      repo_default_branch: repo.default_branch || null,
+      repo_ref: codespaceRef || null,
+      branch: codespaceRef || null,
       codespace_name: codespace.name,
+      codespaceName: codespace.name,
+      codespace_id: codespace.id || null,
+      codespaceId: codespace.id || null,
       web_url: codespace.web_url,
+      webUrl: codespace.web_url,
       status: 'active',
       active: true,
       created_at: createdAt.toISOString(),
+      createdAt: createdAt.toISOString(),
       expires_at: expiresAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
       github_user_id: githubSession.id,
+      githubUserId: githubSession.id,
       github_username: githubSession.username,
-      github_access_token_encrypted: encryptAccessToken(githubSession.accessToken),
+      githubUsername: githubSession.username,
+      connectionType: 'github_codespaces',
+      connection_type: 'github_codespaces',
+      lastOpenedAt: createdAt.toISOString(),
+      last_opened_at: createdAt.toISOString(),
     };
 
-    await cloudant.postDocument({ db: DB_NAME, document: lab });
+    try {
+      await firebaseService.createLab(lab);
+      await firebaseService.createLabSession({
+        _id: sessionId,
+        id: sessionId,
+        labId,
+        lab_id: labId,
+        userId,
+        user_id: userId,
+        startedAt: createdAt.toISOString(),
+        started_at: createdAt.toISOString(),
+        endedAt: null,
+        ended_at: null,
+        status: 'active',
+      });
+    } catch (firestoreErr) {
+      logger.error('[LABS][FIRESTORE] Failed to persist lab metadata after Codespace creation', {
+        labId,
+        message: firestoreErr.message,
+      });
+      await destroyCodespaceForLab(githubSession.accessToken, lab).catch((cleanupErr) => {
+        logger.warn('[LABS][GITHUB] Best-effort Codespace cleanup after Firestore failure failed:', cleanupErr.message);
+      });
+      await firebaseService.deleteLab(labId, {
+        ...lab,
+        status: 'deleted',
+        active: false,
+        deletedAt: new Date().toISOString(),
+        firestore_error: firestoreErr.message,
+      }).catch(() => {});
+
+      const wrapped = new Error('Lab persistence failed after Codespace creation.');
+      wrapped.statusCode = 503;
+      wrapped.code = 'FIRESTORE_PERSISTENCE_FAILED';
+      throw wrapped;
+    }
     logger.info(`[LABS] Created lab ${lab._id} for ${userId}: ${lab.codespace_name}`);
 
     return apiSuccess(res, 201, {
       data: sanitizeLab(lab),
       web_url: lab.web_url,
+      labId: lab._id,
+      codespaceName: lab.codespace_name,
+      webUrl: lab.web_url,
+      expiresAt: lab.expires_at,
       message: 'Lab created.',
     });
   } catch (err) {
-    logger.error('[LABS] Failed to create lab:', err.message);
-    return apiError(res, err.statusCode || 500, 'Failed to create lab.', err.message);
+    logger.warn('[LABS] Failed to create lab:', err.message);
+    return labError(res, err, 'Failed to create lab.');
   }
 });
 

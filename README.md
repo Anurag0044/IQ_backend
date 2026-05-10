@@ -1,399 +1,749 @@
-# CloudIQ Backend .......
+# CloudIQ Backend
 
-Express.js backend for CloudIQ with IBM App ID authentication, Cloudant data storage, and AI/voice integrations.
+CloudIQ Backend is the Express.js API server for CloudIQ. It handles IBM App ID authentication, Cloudant documents, Firebase Firestore and Realtime Database persistence, Socket.IO realtime features, Cloudinary media storage, Orion AI, tutorials, community discussions, posts, comments, notifications, and GitHub Codespaces labs.
 
-## AI Prompting (copy-paste friendly)
-- Purpose: Backend API for auth, social, tutorials, AI chat, and voice transcription.
-- Entry point: server.js (Express app, session, Passport App ID, routes, Socket.IO).
-- Auth: IBM App ID via Passport; session cookies; /auth/login -> /auth/callback; /auth/user returns session state.
-- Key modules: middleware/auth.js (ensureAuthenticated, ensureAdmin), services/adminDb.js (admin role checks), utils/db.js (Cloudant access).
-- Route groups: routes/auth.js, routes/user.js, routes/posts.js, routes/comments.js, routes/friends.js, routes/notifications.js, routes/tutorials.js, routes/orion.js, routes/voice.js, routes/admin.js.
+This repository is backend-only.
 
-## Features
-- IBM App ID OAuth2 login with session cookies
-- Role-based access (admin/user)
-- Social feed: posts, comments, likes
-- Friends and notifications
-- Tutorials and quizzes
-- Orion AI chat (NVIDIA NIM)
-- Voice transcription (IBM Watson STT)
-- Real-time notifications via Socket.IO
+## Quick Start
 
-## Tech Stack
-- Node.js, Express, Passport
-- IBM App ID, IBM Cloudant, IBM Watson STT
-- Socket.IO, Cloudinary, Multer
-- LangChain + DuckDuckGo search for RAG
+1. Install dependencies:
 
-## Setup
-1) Install dependencies
 ```bash
 npm install
 ```
 
-2) Create .env from the template
-```bash
-copy .env.example .env
+2. Create your environment file:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-3) Start the server
+On macOS/Linux:
+
+```bash
+cp .env.example .env
+```
+
+3. Fill in `.env` with IBM App ID, Cloudant, Firebase, Cloudinary, Orion, Watson, GitHub, and session values.
+
+4. Start the backend:
+
 ```bash
 npm run dev
 ```
 
-The server defaults to http://localhost:5000.
+The backend defaults to:
+
+```text
+http://localhost:5000
+```
 
 ## Scripts
-- npm run dev: start with nodemon
-- npm start: start with node
+
+```bash
+npm run dev
+npm start
+```
+
+- `npm run dev` starts `nodemon server.js`.
+- `npm start` starts `node server.js`.
+
+There is no test script configured yet. Use `node --check` for syntax validation after backend changes.
+
+## Required Services
+
+CloudIQ depends on these external services:
+
+- IBM App ID for login and session identity
+- IBM Cloudant for core document storage
+- Firebase Firestore for discussion metadata, messages, brainstorm room metadata, and AI generations
+- Firebase Realtime Database for live whiteboard state
+- Cloudinary for media uploads
+- NVIDIA NIM for Orion AI
+- IBM Watson Speech to Text for voice transcription
+- GitHub OAuth and Codespaces for labs
 
 ## Environment Variables
-From .env.example:
 
-Server and session
-- PORT
-- NODE_ENV
-- SESSION_SECRET
-- FRONTEND_URL
+Copy `.env.example` to `.env` and configure the following groups.
 
-IBM App ID
-- APPID_TENANT_ID
-- APPID_CLIENT_ID
-- APPID_SECRET
-- APPID_OAUTH_SERVER_URL
-- APPID_REDIRECT_URI
-- APPID_DISCOVERY_ENDPOINT
-- APPID_PROFILES_URL
-- APPID_MANAGEMENT_URL
-- APPID_API_KEY
-- ADMIN_ROLE_ID
-- ADMIN_ROLE_NAME
-
-Orion AI (NVIDIA NIM)
-- ORION_API_KEY
-- ORION_MODEL
-- ORION_VISION_MODEL
-- ORION_API_TIMEOUT_MS
-
-## Auth Flow
-1) Frontend redirects to /auth/login
-2) IBM App ID handles login and returns to /auth/callback
-3) Server creates a session and redirects to /dashboard (or /admin)
-4) Frontend calls /auth/user on every load to sync auth state
-
-## API Overview
-This is a high-level map. See route files for exact endpoints.
-
-Auth
-- /auth/login
-- /auth/callback
-- /auth/logout
-- /auth/user
-- /auth/status
-
-Core API
-- /api/user
-- /api/posts
-- /api/comments
-- /api/friends
-- /api/notifications
-- /api/tutorials
-- /api/orion
-- /api/voice
-- /api/admin
-
-## How It Fits Together
-- Frontend base URL is FRONTEND_URL for redirects and CORS.
-- Session cookies are used for authenticated requests.
-- /auth/user returns JSON (never 401) so the frontend can handle logged-out state.
-
-## Notes
-- Orion AI uses NVIDIA NIM. Set ORION_API_KEY and a full NVIDIA model id such as moonshotai/kimi-k2-instruct.
-- Voice transcription requires IBM Watson STT credentials.
-- Admin roles are checked against Cloudant and ADMIN_ROLE_NAME/ADMIN_ROLE_ID.
-
-## GitHub Codespaces Labs
-
-CloudIQ Labs lets an authenticated CloudIQ user connect GitHub, paste a public GitHub repository URL, and launch a temporary GitHub Codespace. IBM App ID remains the primary CloudIQ login; GitHub OAuth is added only for Codespaces API access.
-
-### Exact npm packages
-
-Backend packages:
-
-```bash
-npm install passport-github2 axios node-cron uuid
-```
-
-These packages are already listed in this backend package.json:
-
-- `passport-github2` for GitHub OAuth
-- `axios` for GitHub REST API calls
-- `node-cron` for 5 minute cleanup
-- `uuid` for lab session ids
-
-Frontend package:
-
-```bash
-cd ../ibm_project
-npm install axios
-```
-
-### Backend file structure
-
-New or updated backend files:
-
-- `routes/githubAuth.js` - separate GitHub OAuth connect/status/logout routes
-- `routes/labs.js` - lab create/list/delete APIs
-- `middleware/githubAuth.js` - GitHub session middleware/helpers
-- `services/githubCodespacesService.js` - GitHub repo validation, Codespaces create/delete, token encryption
-- `services/labCleanupService.js` - node-cron cleanup every 5 minutes
-- `services/cloudantClient.js` - adds `lab_sessions` database and lab design doc
-- `server.js` - mounts `/api/github`, `/api/labs`, starts/stops cleanup service
-
-### Environment variables
-
-Add these to the backend `.env`:
+### Server
 
 ```env
+PORT=5000
+NODE_ENV=development
+LOG_LEVEL=info
+SESSION_SECRET=replace-with-a-long-random-secret
 FRONTEND_URL=http://localhost:5173
 BACKEND_URL=http://localhost:5000
+```
 
-GITHUB_CLIENT_ID=your-github-oauth-client-id
-GITHUB_CLIENT_SECRET=your-github-oauth-client-secret
+`FRONTEND_URL` is used for CORS and auth redirects.
+
+### IBM App ID
+
+```env
+APPID_TENANT_ID=...
+APPID_CLIENT_ID=...
+APPID_SECRET=...
+APPID_OAUTH_SERVER_URL=...
+APPID_REDIRECT_URI=http://localhost:5000/auth/callback
+APPID_DISCOVERY_ENDPOINT=...
+APPID_PROFILES_URL=...
+APPID_MANAGEMENT_URL=...
+APPID_API_KEY=...
+ADMIN_ROLE_ID=...
+ADMIN_ROLE_NAME=admin
+```
+
+The canonical user identity in backend permission checks is `user.sub`.
+
+### Cloudant
+
+```env
+CLOUDANT_APIKEY=...
+CLOUDANT_URL=...
+```
+
+The backend initializes required databases and design documents on startup when credentials are present.
+
+Expected databases include:
+
+- `users`
+- `posts`
+- `comments`
+- `notifications`
+- `communities`
+- `community_requests`
+- `community_memberships`
+- `friendships`
+- `admins`
+- `tutorials`
+- `tutorial_media`
+- `upload_metadata`
+- `lab_sessions`
+
+### Firebase
+
+```env
+FIREBASE_PROJECT_ID=...
+FIREBASE_CLIENT_EMAIL=...
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+FIREBASE_DATABASE_URL=https://your-project-id-default-rtdb.firebaseio.com
+```
+
+Firestore is used for discussions and brainstorm metadata. Realtime Database is used for live whiteboard state.
+
+### Cloudinary
+
+```env
+CLOUDINARY_CLOUD_NAME=...
+CLOUDINARY_API_KEY=...
+CLOUDINARY_API_SECRET=...
+```
+
+Cloudinary stores:
+
+- post images in `cloudiq/posts/images`
+- post videos in `cloudiq/posts/videos`
+- discussion media
+- tutorial media
+- profile/community images
+
+### Orion AI
+
+```env
+ORION_API_KEY=nvapi-...
+ORION_MODEL=moonshotai/kimi-k2-instruct
+ORION_VISION_MODEL=meta/llama-3.2-11b-vision-instruct
+ORION_API_TIMEOUT_MS=60000
+```
+
+`ORION_MODEL` must include the publisher prefix, for example `moonshotai/kimi-k2-instruct`.
+
+### GitHub Codespaces Labs
+
+```env
+GITHUB_CLIENT_ID=...
+GITHUB_CLIENT_SECRET=...
 GITHUB_CALLBACK_URL=http://localhost:5000/api/github/callback
 GITHUB_API_VERSION=2026-03-10
-
 LAB_TTL_MINUTES=30
 LAB_TOKEN_ENCRYPTION_KEY=replace-with-a-long-random-secret-used-only-for-lab-token-encryption
 ```
 
-Keep the existing IBM App ID, Cloudant, Firebase, and session variables unchanged. `LAB_TOKEN_ENCRYPTION_KEY` is used to encrypt the GitHub access token stored with a lab so the scheduled cleanup can really delete expired Codespaces after the browser session is gone. The encrypted token is never returned by the API.
+`LAB_TOKEN_ENCRYPTION_KEY` encrypts GitHub access tokens stored for cleanup. Never expose it to the frontend.
 
-### GitHub OAuth app setup
-
-Create the OAuth app at GitHub Developer settings:
-
-1. Go to GitHub -> Settings -> Developer settings -> OAuth Apps -> New OAuth App.
-2. Homepage URL for local dev: `http://localhost:5173`.
-3. Authorization callback URL for local dev: `http://localhost:5000/api/github/callback`.
-4. For Render, set callback to `https://your-render-backend.onrender.com/api/github/callback`.
-5. Put the generated Client ID and Client Secret into `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
-
-Required scopes requested by the backend:
-
-- `codespace` - create and delete Codespaces
-- `read:user` - identify the connected GitHub account
-
-### Cloudant setup
-
-Create the database if it does not already exist:
+## Project Structure
 
 ```text
-lab_sessions
+server.js                         Express, sessions, Passport, Socket.IO, route mounting
+middleware/auth.js                Auth helpers and admin checks
+routes/                           HTTP route modules
+sockets/                          Socket.IO feature handlers
+services/cloudantClient.js        Cloudant startup and design docs
+services/firebaseService.js       Firestore and Realtime Database access
+services/cloudinaryService.js     Cloudinary uploads/deletes
+services/mediaService.js          Media metadata wrappers
+services/brainstormService.js     Brainstorm rooms, whiteboard sync, Orion AI storage
+services/labCleanupService.js     Expired Codespaces cleanup cron
+utils/logger.js                   Structured logging helpers
 ```
 
-The backend also ensures this database on startup through `services/cloudantClient.js`.
+## Authentication
 
-Stored lab document shape:
+IBM App ID is the primary login system.
+
+Auth flow:
+
+1. Frontend redirects to `GET /auth/login`.
+2. IBM App ID authenticates the user.
+3. IBM redirects to `GET /auth/callback`.
+4. Backend creates an Express session.
+5. Frontend calls `GET /auth/user` to restore session state.
+
+Important rules:
+
+- API routes use `ensureAuthenticated`.
+- Permission-sensitive storage should use `extractUserInfo(req.user).userId`.
+- `userId` should resolve from IBM App ID `sub`.
+- Do not use email, username, or membership document ids as the canonical permission identity.
+
+## API Route Map
+
+### Auth
+
+```text
+GET  /auth/login
+GET  /auth/callback
+GET  /auth/logout
+GET  /auth/user
+GET  /auth/status
+```
+
+### User
+
+```text
+GET    /api/user/profile
+PUT    /api/user/profile
+POST   /api/user/onboarding
+DELETE /api/user/profile-image
+DELETE /api/user/account
+```
+
+### Communities
+
+```text
+GET    /api/communities
+POST   /api/communities
+PUT    /api/communities/:id
+DELETE /api/communities/:id
+POST   /api/communities/:id/join
+POST   /api/communities/:id/leave
+POST   /api/communities/:id/request
+GET    /api/communities/:id/requests
+POST   /api/communities/:id/requests/:requestId/approve
+POST   /api/communities/:id/requests/:requestId/reject
+```
+
+Community membership is persisted in `community_memberships`. Discussion and brainstorming access should validate membership through this source.
+
+### Posts
+
+```text
+GET    /api/posts
+POST   /api/posts/create
+DELETE /api/posts/:id
+POST   /api/posts/:id/like
+```
+
+Post media supports:
+
+- image uploads
+- video uploads
+- mixed media posts with image plus video
+
+Supported image types:
+
+```text
+image/jpeg
+image/png
+image/webp
+```
+
+Supported video types:
+
+```text
+video/mp4
+video/webm
+video/quicktime
+```
+
+Limits:
+
+- images: 5 MB
+- videos: 100 MB
+
+Post media metadata includes both legacy and modern fields:
 
 ```json
 {
-  "_id": "uuid",
-  "user_id": "ibm-app-id-sub",
-  "repo_url": "https://github.com/user/repo",
-  "repo_name": "user/repo",
-  "codespace_name": "codespace-name",
-  "web_url": "https://...",
-  "status": "active",
-  "created_at": "2026-05-10T00:00:00.000Z",
-  "expires_at": "2026-05-10T00:30:00.000Z"
+  "image_url": "https://...",
+  "image_public_id": "cloudiq/posts/images/...",
+  "video_url": "https://...",
+  "video_public_id": "cloudiq/posts/videos/...",
+  "media_type": "video",
+  "mediaUrl": "https://...",
+  "mediaType": "video",
+  "mediaPublicId": "cloudiq/posts/videos/...",
+  "media": [
+    {
+      "type": "video",
+      "url": "https://...",
+      "publicId": "cloudiq/posts/videos/...",
+      "resourceType": "video"
+    }
+  ]
 }
 ```
 
-The server also stores internal encrypted cleanup metadata on the document. API responses remove secrets and `_rev`.
+When a post is deleted, Cloudinary media cleanup runs before Cloudant metadata deletion.
 
-### Backend routes
+### Comments, Friends, Notifications
 
-GitHub OAuth:
+```text
+POST   /api/comments/create
+DELETE /api/comments/:id
 
-- `GET /api/github/login` - starts GitHub OAuth, requires existing IBM App ID session
-- `GET /api/github/callback` - saves GitHub access token in session
-- `GET /api/github/status` - returns connection state
-- `POST /api/github/logout` - removes GitHub connection from session
+GET    /api/friends
+GET    /api/friends/discover
+POST   /api/friends/request
+POST   /api/friends/accept
+POST   /api/friends/reject
+DELETE /api/friends/:id
 
-Labs:
+GET    /api/notifications
+PATCH  /api/notifications/:id/read
+```
 
-- `GET /api/labs` - list the current user's labs and active lab
-- `POST /api/labs/create` - validate public repo, create Codespace, store active lab
-- `DELETE /api/labs` - delete the current user's active lab
-- `DELETE /api/labs/:labId` - delete only the current user's matching lab
+### Tutorials
 
-Create request:
+```text
+GET    /api/tutorials
+GET    /api/tutorials/:id
+POST   /api/tutorials
+PUT    /api/tutorials/:id
+DELETE /api/tutorials/:id
+POST   /api/tutorials/upload-inline-image
+POST   /api/tutorials/upload-inline-media
+DELETE /api/tutorials/image
+```
+
+Tutorials support Cloudinary image and video media. Admin and community moderator rules are enforced in the route.
+
+### Discussions
+
+```text
+GET    /api/discussions/communities/:communityId/channels
+POST   /api/discussions/communities/:communityId/channels
+DELETE /api/discussions/communities/:communityId/channels/:channelId
+GET    /api/discussions/channels/:channelId/messages
+POST   /api/discussions/channels/:channelId/messages
+POST   /api/discussions/channels/:channelId/media
+POST   /api/discussions/messages/:messageId/pin
+POST   /api/discussions/messages/:messageId/unpin
+POST   /api/discussions/messages/:messageId/reactions
+POST   /api/discussions/channels/:channelId/read
+GET    /api/discussions/communities/:communityId/unreads
+```
+
+Firestore stores discussion channels, messages, reactions, unread states, typing, and presence.
+
+Discussion media uploads use Cloudinary.
+
+### Orion Chat
+
+```text
+POST /api/orion/chat
+```
+
+This route streams Orion chat responses over Server-Sent Events.
+
+### Brainstorming
+
+```text
+POST   /api/brainstorm/rooms
+GET    /api/brainstorm/rooms/:roomId
+POST   /api/brainstorm/rooms/:roomId/join
+POST   /api/brainstorm/rooms/:roomId/leave
+POST   /api/brainstorm/rooms/:roomId/sync
+POST   /api/brainstorm/rooms/:roomId/clear
+POST   /api/brainstorm/rooms/:roomId/notes
+POST   /api/brainstorm/rooms/:roomId/connectors
+DELETE /api/brainstorm/rooms/:roomId
+POST   /api/brainstorm/ai/generate
+POST   /api/brainstorm/ai/expand
+POST   /api/brainstorm/ai/project
+```
+
+Brainstorming uses:
+
+- Firebase Realtime Database for live whiteboard state
+- Firestore `brainstorm_sessions` for room metadata
+- Firestore `brainstorm_ai_generations` for Orion AI responses
+- Cloudant `community_memberships` for access checks
+
+Create room request:
 
 ```json
 {
-  "repoUrl": "https://github.com/user/repo"
+  "communityId": "community-id",
+  "title": "AI Cloud Startup Ideas"
 }
 ```
 
-Successful create response includes:
+Whiteboard sync request:
 
 ```json
 {
-  "success": true,
-  "web_url": "https://...",
-  "data": {
-    "_id": "uuid",
-    "repo_name": "user/repo",
-    "status": "active",
-    "expires_at": "..."
+  "whiteboard": {
+    "strokes": [],
+    "shapes": [],
+    "notes": [],
+    "connectors": []
   }
 }
 ```
 
-### Codespaces behavior
+Sticky note request:
 
-The backend uses the real GitHub REST API:
-
-- `GET /repos/{owner}/{repo}` to fetch repository details
-- `POST /repos/{owner}/{repo}/codespaces` to create the Codespace
-- `DELETE /user/codespaces/{codespace_name}` to delete the Codespace
-
-Private repositories are rejected even if the connected GitHub user can access them. Only one `active` lab is allowed per CloudIQ user. Labs expire after `LAB_TTL_MINUTES`, default `30`.
-
-### Cleanup system
-
-`services/labCleanupService.js` runs every 5 minutes:
-
-1. Finds `active` labs where `expires_at <= now`.
-2. Decrypts the stored GitHub token.
-3. Deletes the GitHub Codespace.
-4. Updates the Cloudant document to `status: "expired"`.
-
-On backend shutdown, `server.js` stops the cron scheduler before closing the HTTP server.
-
-### Render deployment notes
-
-Set these Render environment variables:
-
-```env
-NODE_ENV=production
-FRONTEND_URL=https://your-netlify-site.netlify.app
-BACKEND_URL=https://your-render-backend.onrender.com
-GITHUB_CALLBACK_URL=https://your-render-backend.onrender.com/api/github/callback
-GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
-LAB_TOKEN_ENCRYPTION_KEY=...
-```
-
-Also keep existing IBM App ID callback URLs and Cloudant credentials configured. Because cross-site cookies are used between Netlify and Render, keep the existing production session cookie settings in `server.js`.
-
-### Frontend file structure
-
-New or updated frontend files in `../ibm_project`:
-
-- `src/pages/Labs.jsx`
-- `src/pages/Labs.css`
-- `src/services/api.js`
-- `src/App.jsx`
-- `src/components/Sidebar.jsx`
-
-The new `/labs` page includes:
-
-- GitHub connect button
-- public repo URL input
-- launch button with loading state
-- active lab card
-- countdown timer
-- expiration timestamp
-- open Codespace button
-- delete lab button
-- error and success messages
-- multiple-lab prevention in the UI
-
-### Frontend API examples
-
-Axios setup in `src/services/api.js`:
-
-```js
-export const axiosClient = axios.create({
-  baseURL: API_URL || undefined,
-  withCredentials: true,
-  headers: {
-    Accept: 'application/json',
-    'Content-Type': 'application/json',
-  },
-});
-```
-
-Launch handler:
-
-```js
-const result = await createLab(repoUrl.trim());
-if (result.success && result.web_url) {
-  window.open(result.web_url, '_blank', 'noopener,noreferrer');
+```json
+{
+  "note": {
+    "text": "Use serverless inference",
+    "x": 120,
+    "y": 240,
+    "color": "#fff3a3"
+  }
 }
 ```
 
-Delete handler:
+Connector request:
+
+```json
+{
+  "connector": {
+    "from": "note-a",
+    "to": "note-b",
+    "label": "feeds",
+    "points": [{ "x": 10, "y": 20 }]
+  }
+}
+```
+
+AI generate request:
+
+```json
+{
+  "roomId": "optional-room-id",
+  "prompt": "Startup ideas using AI + Cloud"
+}
+```
+
+AI responses are stored in Firestore:
+
+```text
+brainstorm_ai_generations/{generationId}
+```
+
+Stored fields include:
+
+```json
+{
+  "userId": "ibm-app-id-sub",
+  "roomId": "room-id",
+  "action": "generate",
+  "prompt": "...",
+  "response": "...",
+  "model": "moonshotai/kimi-k2-instruct",
+  "createdAt": "..."
+}
+```
+
+Security and performance rules:
+
+- All brainstorm REST routes require authentication.
+- Room creation requires community membership or admin status.
+- Room access validates community membership.
+- Room deletion is limited to the room owner or admin.
+- AI requests are rate-limited per user.
+- Whiteboard payloads are size-limited.
+- Drawing updates should be batched/debounced by the frontend.
+- Do not write to Firestore on every mouse movement; use Realtime Database for live state and Firestore only for stable metadata.
+
+### Voice
+
+```text
+POST /api/voice/transcribe
+```
+
+Requires IBM Watson Speech to Text credentials.
+
+### GitHub OAuth and Labs
+
+```text
+GET    /api/github/login
+GET    /api/github/callback
+GET    /api/github/status
+POST   /api/github/logout
+
+GET    /api/labs
+POST   /api/labs/create
+DELETE /api/labs
+DELETE /api/labs/:labId
+```
+
+Labs let authenticated users connect GitHub, provide a public repository URL, and launch a temporary Codespace.
+
+Create lab request:
+
+```json
+{
+  "repoUrl": "https://github.com/octocat/Hello-World"
+}
+```
+
+Rules:
+
+- IBM App ID session is still required.
+- GitHub OAuth is only for Codespaces access.
+- Private repositories are rejected.
+- One active lab per user is allowed.
+- Labs expire after `LAB_TTL_MINUTES`.
+- Cleanup runs every 5 minutes.
+- Encrypted GitHub tokens are never returned by the API.
+
+## Socket.IO
+
+Socket.IO is initialized in `server.js`.
+
+Clients should register after connecting:
 
 ```js
-const result = await deleteLab(activeLab._id);
-if (result.success) setActiveLab(null);
+socket.emit("register", {
+  sub: user.sub,
+  userId: user.userId,
+  email: user.email,
+  username: user.username,
+  picture: user.picture
+});
 ```
 
-Timer implementation:
+Use `sub`/`userId` from the authenticated IBM App ID session.
+
+### Discussion Socket Events
+
+```text
+join_community_discussions
+leave_community_discussions
+join_channel
+leave_channel
+typing_start
+typing_stop
+new_message
+message_reaction
+```
+
+Errors are emitted as:
+
+```text
+discussion_error
+```
+
+### Whiteboard Socket Events
+
+Client emits:
+
+```text
+whiteboard:create_room
+whiteboard:join_room
+whiteboard:leave_room
+whiteboard:sync_canvas
+whiteboard:clear_canvas
+whiteboard:add_sticky_note
+whiteboard:add_connector
+```
+
+Server emits:
+
+```text
+whiteboard:room_created
+whiteboard:room_joined
+whiteboard:user_joined
+whiteboard:user_left
+whiteboard:canvas_synced
+whiteboard:canvas_cleared
+whiteboard:sticky_note_added
+whiteboard:connector_added
+whiteboard_error
+```
+
+To avoid infinite sync loops, include a client-generated `mutationId` in outgoing whiteboard events and ignore echoed updates that match the local pending mutation. The server also includes `sourceSocketId` in broadcast payloads.
+
+Example:
 
 ```js
-const next = new Date(expiresAt).getTime() - Date.now();
-setRemaining(next);
+socket.emit("whiteboard:sync_canvas", {
+  roomId,
+  mutationId: crypto.randomUUID(),
+  whiteboard: {
+    strokes,
+    shapes,
+    notes,
+    connectors
+  }
+});
 ```
 
-### Netlify deployment notes
+The frontend should debounce drawing sync. A good starting point is 250-500 ms or sync on stroke end.
 
-Set the frontend environment variables:
+## Logging
 
-```env
-VITE_BACKEND_URL=https://your-render-backend.onrender.com
-VITE_API_URL=https://your-render-backend.onrender.com
+Use professional logs only. Important log markers include:
+
+```text
+[POSTS] video upload started
+[POSTS] video upload completed
+[POSTS] post created
+[WHITEBOARD] room synced
+[WHITEBOARD] user joined
+[ORION] generation completed
+[ORION] expand request failed
 ```
 
-If using a Netlify proxy instead of direct backend calls, keep `VITE_API_URL` empty and proxy `/api/*` and `/auth/*` to Render. OAuth redirects must use `VITE_BACKEND_URL` so browser redirects go directly to the backend.
+Avoid logging:
 
-### Local testing
+- raw tokens
+- full private keys
+- entire uploaded files
+- full AI prompts when sensitive
+- high-frequency mouse movement events
+
+## Local Development Checklist
 
 1. Start backend:
 
 ```bash
-cd ibm_backend
 npm run dev
 ```
 
-2. Start frontend:
+2. Start the frontend from the frontend repository.
+
+3. Log in through IBM App ID.
+
+4. Confirm:
+
+- `GET /auth/user` returns a logged-in session.
+- communities load
+- discussions load
+- posts load
+- tutorials load
+- Socket.IO registration succeeds
+
+5. For posts:
+
+- create a text post
+- create an image post
+- create a video post under 100 MB
+- create a mixed image and video post
+- delete a media post and confirm Cloudinary cleanup
+
+6. For brainstorming:
+
+- create a room inside a community where the user is a member
+- join the room over REST or Socket.IO
+- sync a canvas payload
+- add a sticky note
+- add a connector
+- reload and confirm whiteboard state persists
+- call `/api/brainstorm/ai/generate`
+- confirm a document appears in `brainstorm_ai_generations`
+
+7. For labs:
+
+- connect GitHub
+- create a Codespace from a public repository
+- refresh and confirm the active lab persists
+- delete the lab
+
+## Validation Commands
+
+Run syntax checks after backend edits:
 
 ```bash
-cd ../ibm_project
-npm run dev
+node --check server.js
+node --check middleware/auth.js
+node --check routes/posts.js
+node --check routes/discussions.js
+node --check routes/brainstorm.js
+node --check routes/tutorials.js
+node --check sockets/discussions.js
+node --check sockets/whiteboard.js
+node --check services/firebaseService.js
+node --check services/brainstormService.js
+node --check services/cloudinaryService.js
+node --check services/mediaService.js
 ```
 
-3. Log in through IBM App ID as usual.
-4. Open `/labs`.
-5. Click `Connect GitHub`.
-6. Paste a public repo URL, for example `https://github.com/octocat/Hello-World`.
-7. Click `Launch`.
-8. Confirm a Codespace opens in a new tab.
-9. Refresh `/labs` and confirm the active lab persists.
-10. Click `Delete lab` and confirm GitHub Codespaces no longer shows it.
-11. To test expiration, temporarily set `LAB_TTL_MINUTES=1`, create a lab, wait for the cron tick, and confirm Cloudant changes status to `expired`.
+If Firebase writes fail on Windows with gRPC or path-related errors, verify the Node version and local path first. Prefer Node 20 LTS and a short checkout path.
 
-### Server.js modifications
+## Deployment Notes
 
-The labs system adds only these server-level changes:
+### Render Backend
 
-- imports `startLabCleanupService` and `stopLabCleanupService`
-- mounts `app.use("/api/github", githubAuthRoutes)`
-- mounts `app.use("/api/labs", labsRoutes)`
-- calls `startLabCleanupService()` after the server starts
-- registers `SIGTERM` and `SIGINT` handlers to stop cleanup gracefully
+Set production environment variables:
 
-IBM App ID auth, existing community/discussion/tutorial/admin routes, and Socket.IO handlers are left in place.
+```env
+NODE_ENV=production
+FRONTEND_URL=https://your-frontend-domain
+BACKEND_URL=https://your-backend-domain
+APPID_REDIRECT_URI=https://your-backend-domain/auth/callback
+GITHUB_CALLBACK_URL=https://your-backend-domain/api/github/callback
+```
+
+Also configure:
+
+- IBM App ID credentials
+- Cloudant credentials
+- Firebase service account values
+- Firebase Realtime Database URL
+- Cloudinary credentials
+- Orion API key
+- Watson credentials
+- GitHub OAuth credentials
+- `SESSION_SECRET`
+- `LAB_TOKEN_ENCRYPTION_KEY`
+
+Because cross-site cookies are used between frontend hosting and backend hosting, keep production session cookie settings aligned with HTTPS.
+
+### Frontend Environment
+
+Typical frontend variables:
+
+```env
+VITE_BACKEND_URL=https://your-backend-domain
+VITE_API_URL=https://your-backend-domain
+```
+
+If using a frontend proxy, route `/api/*` and `/auth/*` to the backend.
+
+## Safety Rules For Future Backend Changes
+
+- Do not rewrite auth, discussions, posts, tutorials, labs, or communities for unrelated features.
+- Preserve `user.sub` as the canonical permission identity.
+- Align REST and Socket.IO authorization for realtime features.
+- Keep Firestore discussion persistence intact.
+- Keep Cloudinary cleanup paths intact.
+- Use Realtime Database for high-frequency whiteboard state.
+- Use Firestore for durable room metadata and AI generation history.
+- Keep changes small and validate touched files with `node --check`.

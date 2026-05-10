@@ -2,11 +2,11 @@
 // CloudIQ Backend - Main Server
 // ============================================
 // Complete auth flow:
-//   Login:  Frontend → /auth/login → IBM App ID → /auth/callback
+//   Login:  Frontend → /api/auth/login → IBM App ID → configured callback
 //           → Checks admin status in Cloudant
 //           → Admin: redirect to /admin  |  User: redirect to /dashboard
-//   Logout: Frontend → /auth/logout → destroy session → Frontend /
-//   Check:  Frontend → /auth/user → { loggedIn: true/false, user }
+//   Logout: Frontend → /api/auth/logout → destroy session → Frontend /
+//   Check:  Frontend → /api/auth/user → { loggedIn: true/false, user }
 //   Role:   Frontend → /api/user-role → { email, isAdmin }
 
 require('dotenv').config();
@@ -21,8 +21,10 @@ const { WebAppStrategy } = require('ibmcloud-appid');
 const logger = require('./utils/logger');
 const {
   corsOrigin,
+  getBackendUrl,
   getFrontendUrl,
   isProduction,
+  joinUrl,
   validateEnvironment,
 } = require('./config/env');
 const { extractUserInfo } = require('./middleware/auth');
@@ -59,6 +61,9 @@ const PORT = process.env.PORT || 5000;
 validateEnvironment();
 
 const FRONTEND_URL = getFrontendUrl();
+const BACKEND_URL = getBackendUrl();
+const EXPECTED_GITHUB_CALLBACK_URL = joinUrl(BACKEND_URL, '/api/github/callback');
+const CONFIGURED_GITHUB_CALLBACK_URL = process.env.GITHUB_CALLBACK_URL || EXPECTED_GITHUB_CALLBACK_URL;
 const hasAppIdCredentials = Boolean(
   process.env.APPID_TENANT_ID &&
   process.env.APPID_CLIENT_ID &&
@@ -66,6 +71,45 @@ const hasAppIdCredentials = Boolean(
   process.env.APPID_OAUTH_SERVER_URL &&
   process.env.APPID_REDIRECT_URI
 );
+
+function logMountedRoutes() {
+  [
+    ['Auth', '/api/auth'],
+    ['Auth legacy aliases', '/auth'],
+    ['GitHub OAuth', '/api/github'],
+    ['Labs', '/api/labs'],
+    ['User', '/api/user'],
+    ['Admin', '/api/admin'],
+    ['Posts', '/api/posts'],
+    ['Communities', '/api/communities'],
+    ['Notifications', '/api/notifications'],
+    ['Comments', '/api/comments'],
+    ['Friends', '/api/friends'],
+    ['Voice', '/api/voice'],
+    ['Tutorials', '/api/tutorials'],
+    ['Orion', '/api/orion'],
+    ['Discussions', '/api/discussions'],
+    ['Brainstorm', '/api/brainstorm'],
+  ].forEach(([name, path]) => logger.info(`[ROUTES] ${name} mounted at ${path}`));
+
+  logger.info('[ROUTES] Health mounted at /');
+  logger.info('[ROUTES] Health mounted at /api/health');
+
+  if (CONFIGURED_GITHUB_CALLBACK_URL) {
+    logger.info('[ROUTES] GitHub OAuth callback at ' + CONFIGURED_GITHUB_CALLBACK_URL);
+  }
+
+  if (EXPECTED_GITHUB_CALLBACK_URL && CONFIGURED_GITHUB_CALLBACK_URL !== EXPECTED_GITHUB_CALLBACK_URL) {
+    logger.warn('[ROUTES] GITHUB_CALLBACK_URL differs from BACKEND_URL-derived callback', {
+      expected: EXPECTED_GITHUB_CALLBACK_URL,
+      configured: CONFIGURED_GITHUB_CALLBACK_URL,
+    });
+  }
+
+  if (!CONFIGURED_GITHUB_CALLBACK_URL) {
+    logger.warn('[ROUTES] GitHub OAuth callback is not configured. Set BACKEND_URL or GITHUB_CALLBACK_URL.');
+  }
+}
 
 // ─────────────────────────────────────────────
 // Setup Socket.IO
@@ -463,7 +507,17 @@ app.get('/debug-user', async (req, res) => {
 // Health Check
 // ─────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ service: 'CloudIQ Backend', status: 'running', timestamp: new Date().toISOString() });
+  res.json({
+    success: true,
+    message: 'CloudIQ backend running',
+  });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    status: 'healthy',
+  });
 });
 
 app.get('/api/debug/firestore', async (req, res) => {
@@ -660,7 +714,13 @@ app.use('/api/brainstorm', brainstormRoutes);
 // 404 + Error Handlers
 // ─────────────────────────────────────────────
 app.use((req, res) => {
-  res.status(404).json({ success: false, error: 'Not Found', message: `${req.method} ${req.originalUrl} does not exist.` });
+  res.status(404).json({
+    success: false,
+    error: 'Not Found',
+    message: 'Route does not exist',
+    method: req.method,
+    path: req.path,
+  });
 });
 
 app.use((err, req, res, next) => {
@@ -711,6 +771,7 @@ function extractRoles(user) {
 server.listen(PORT, () => {
   logger.info(`[SERVER] Running on port ${PORT}`);
   logger.info(`[SERVER] Frontend origin ${FRONTEND_URL}`);
+  logMountedRoutes();
   if (hasAppIdCredentials) {
     logger.info('[AUTH] IBM App ID ready');
     logger.debug('[AUTH] App ID callback URL:', process.env.APPID_REDIRECT_URI);

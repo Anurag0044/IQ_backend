@@ -68,7 +68,7 @@ function ensureAuthenticated(req, res, next) {
     });
   }
 
-  return res.redirect('/auth/login');
+  return res.redirect('/api/auth/login');
 }
 
 /**

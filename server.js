@@ -19,6 +19,12 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const { WebAppStrategy } = require('ibmcloud-appid');
 const logger = require('./utils/logger');
+const {
+  corsOrigin,
+  getFrontendUrl,
+  isProduction,
+  validateEnvironment,
+} = require('./config/env');
 const { extractUserInfo } = require('./middleware/auth');
 const { adminCache } = require('./services/cacheService');
 const githubAuthRoutes = require("./routes/githubAuth");
@@ -50,7 +56,9 @@ const { Server } = require('socket.io');
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+validateEnvironment();
+
+const FRONTEND_URL = getFrontendUrl();
 const hasAppIdCredentials = Boolean(
   process.env.APPID_TENANT_ID &&
   process.env.APPID_CLIENT_ID &&
@@ -64,7 +72,7 @@ const hasAppIdCredentials = Boolean(
 // ─────────────────────────────────────────────
 const io = new Server(server, {
   cors: {
-    origin: FRONTEND_URL,
+    origin: corsOrigin,
     credentials: true,
   }
 });
@@ -155,7 +163,7 @@ app.use(helmet({ contentSecurityPolicy: false }));
 // 2. CORS — frontend origin + cookies
 // ─────────────────────────────────────────────
 app.use(cors({
-  origin: FRONTEND_URL,
+  origin: corsOrigin,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -201,10 +209,8 @@ app.use(morgan(':method :url :status :response-time ms', {
 // ─────────────────────────────────────────────
 // 4. Session — MUST be before Passport
 // ─────────────────────────────────────────────
-const isProduction = process.env.NODE_ENV === 'production';
-
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'cloudiq-fallback-secret',
+  secret: process.env.SESSION_SECRET || 'cloudiq-development-session-secret',
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -431,7 +437,7 @@ app.get('/debug-user', async (req, res) => {
   if (!req.isAuthenticated || !req.isAuthenticated()) {
     return res.json({
       loggedIn: false,
-      message: 'Not logged in. Go to http://localhost:' + PORT + '/auth/login first.',
+      message: 'Not logged in. Start authentication at /auth/login first.',
     });
   }
   const user = req.user;

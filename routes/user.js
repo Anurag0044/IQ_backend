@@ -1,22 +1,23 @@
-// ============================================
+﻿// ============================================
 // CloudIQ Backend - User Profile Routes
 // ============================================
-// GET  /api/user/profile     — check onboarding + return profile
-// POST /api/user/onboarding  — first-time setup (username, purpose, image)
-// PUT  /api/user/profile     — update username / profile image
+// GET  /api/user/profile     â€” check onboarding + return profile
+// POST /api/user/onboarding  â€” first-time setup (username, purpose, image)
+// PUT  /api/user/profile     â€” update username / profile image
 
 const express = require('express');
 const multer = require('multer');
 const cloudant = require('../services/cloudantClient');
 const { uploadBuffer, deleteImage } = require('../services/cloudinaryService');
 const { ensureAuthenticated } = require('../middleware/auth');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 const DB_NAME = 'users'; // existing Cloudant DB
 
-// ─────────────────────────────────────────────
-// Multer — profile images (5 MB, jpeg/png/webp)
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Multer â€” profile images (5 MB, jpeg/png/webp)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -27,9 +28,9 @@ const upload = multer({
   },
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Helpers
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getUserId(req) {
   // App ID stores the subject as `sub` or `id`
   return (
@@ -56,10 +57,10 @@ function extractPublicId(url) {
   return match ? match[1] : null;
 }
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/user/profile
 // Check if user is onboarded; return profile if yes
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.get('/profile', ensureAuthenticated, async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -70,7 +71,7 @@ router.get('/profile', ensureAuthenticated, async (req, res) => {
       return res.json({ success: true, is_onboarded: true, data: safe });
     } catch (err) {
       if (err.status === 404) {
-        // New user — not yet onboarded
+        // New user â€” not yet onboarded
         return res.json({
           success: true,
           is_onboarded: false,
@@ -80,15 +81,15 @@ router.get('/profile', ensureAuthenticated, async (req, res) => {
       throw err;
     }
   } catch (err) {
-    console.error('[User] Get profile error:', err.message);
+    logger.error('[User] Get profile error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/user/dashboard
 // Returns real-time timeSpent, tutorialsCount, activities
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.get('/dashboard', ensureAuthenticated, async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -110,7 +111,7 @@ router.get('/dashboard', ensureAuthenticated, async (req, res) => {
       const tutResp = await cloudant.postAllDocs({ db: 'tutorials' });
       tutorialsCount = (tutResp.result.rows || []).filter(r => !r.id.startsWith('_design')).length;
     } catch (err) {
-      console.warn('[User] tutorials count failed:', err.message);
+      logger.warn('[User] tutorials count failed:', err.message);
     }
 
     return res.json({
@@ -124,15 +125,15 @@ router.get('/dashboard', ensureAuthenticated, async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[User] Dashboard error:', err.message);
+    logger.error('[User] Dashboard error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // PUT /api/user/sync-session
 // Adds elapsed minutes to time_spent, optionally logs an activity
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.put('/sync-session', ensureAuthenticated, async (req, res) => {
   const MAX_RETRIES = 2;
   try {
@@ -164,7 +165,7 @@ router.put('/sync-session', ensureAuthenticated, async (req, res) => {
         }
 
         const updated = { ...existing, time_spent, points, daily_time_spent, activities, updated_at: new Date().toISOString() };
-        // Use postDocument (not putDocument) — Cloudant IAM key may lack PUT permission
+        // Use postDocument (not putDocument) â€” Cloudant IAM key may lack PUT permission
         // postDocument with _id + _rev in the body performs an update
         await cloudant.postDocument({ db: DB_NAME, document: updated });
 
@@ -172,29 +173,29 @@ router.put('/sync-session', ensureAuthenticated, async (req, res) => {
       } catch (innerErr) {
         // 409 = rev conflict, retry with fresh doc
         if (innerErr.status === 409 && attempt < MAX_RETRIES) {
-          console.warn(`[User] sync-session rev conflict, retrying (${attempt + 1}/${MAX_RETRIES})`);
+          logger.warn(`[User] sync-session rev conflict, retrying (${attempt + 1}/${MAX_RETRIES})`);
           continue;
         }
         throw innerErr;
       }
     }
   } catch (err) {
-    console.error('[User] sync-session error:', err.status, err.message);
+    logger.error('[User] sync-session error:', err.status, err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/user/courses (legacy stub)
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.get('/courses', ensureAuthenticated, (req, res) => {
   res.json({ success: true, data: { enrolled: [], recommended: [], completed: [] } });
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/user/onboarding
-// First-time user setup — creates Cloudant document
-// ─────────────────────────────────────────────
+// First-time user setup â€” creates Cloudant document
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -233,20 +234,20 @@ router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), 
 
     if (!response.result.ok) throw new Error('Cloudant did not confirm document creation');
 
-    console.log(`[User] Onboarding complete: ${username} (${email})`);
+    logger.info(`[User] Onboarding complete: ${username} (${email})`);
 
     const { profile_image_public_id: _p, ...safe } = userDoc;
     return res.status(201).json({ success: true, data: safe });
   } catch (err) {
-    console.error('[User] Onboarding error:', err.message);
+    logger.error('[User] Onboarding error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // PUT /api/user/profile
 // Update username and/or profile image
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.put('/profile', ensureAuthenticated, upload.single('profile_image'), async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -263,7 +264,7 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
       const oldId = existing.profile_image_public_id || extractPublicId(existing.profile_image_url);
       if (oldId) {
         try { await deleteImage(oldId); }
-        catch (e) { console.error('[User] Old image delete failed:', e.message); }
+        catch (e) { logger.error('[User] Old image delete failed:', e.message); }
       }
       const result = await uploadBuffer(req.file.buffer, 'profile_images');
       profile_image_url = result.secure_url;
@@ -282,7 +283,7 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
     };
 
     await cloudant.postDocument({ db: DB_NAME, document: updated });
-    console.log(`[User] Profile updated: ${updated.username} (${userId})`);
+    logger.info(`[User] Profile updated: ${updated.username} (${userId})`);
 
     const { profile_image_public_id: _p, _rev: _r, ...safe } = updated;
     return res.json({ success: true, data: safe });
@@ -290,15 +291,15 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
     if (err.status === 404) {
       return res.status(404).json({ success: false, error: 'Profile not found. Please complete onboarding first.' });
     }
-    console.error('[User] Update profile error:', err.message);
+    logger.error('[User] Update profile error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // DELETE /api/user/profile-image
-// Remove profile picture — clears Cloudinary + nulls DB field
-// ─────────────────────────────────────────────
+// Remove profile picture â€” clears Cloudinary + nulls DB field
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.delete('/profile-image', ensureAuthenticated, async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -307,7 +308,7 @@ router.delete('/profile-image', ensureAuthenticated, async (req, res) => {
     const publicId = existing.profile_image_public_id || extractPublicId(existing.profile_image_url);
     if (publicId) {
       try { await deleteImage(publicId); }
-      catch (e) { console.error('[User] Cloudinary image delete failed:', e.message); }
+      catch (e) { logger.error('[User] Cloudinary image delete failed:', e.message); }
     }
 
     const updated = {
@@ -318,20 +319,20 @@ router.delete('/profile-image', ensureAuthenticated, async (req, res) => {
     };
     await cloudant.postDocument({ db: DB_NAME, document: updated });
 
-    console.log(`[User] Profile image removed for: ${userId}`);
+    logger.info(`[User] Profile image removed for: ${userId}`);
     const { profile_image_public_id: _p, _rev: _r, ...safe } = updated;
     return res.json({ success: true, data: safe });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Profile not found.' });
-    console.error('[User] Delete profile image error:', err.message);
+    logger.error('[User] Delete profile image error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // DELETE /api/user/account
 // Permanently delete: Cloudinary image + Cloudant doc + session
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.delete('/account', ensureAuthenticated, async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -344,12 +345,12 @@ router.delete('/account', ensureAuthenticated, async (req, res) => {
       const publicId = existing.profile_image_public_id || extractPublicId(existing.profile_image_url);
       if (publicId) {
         try { await deleteImage(publicId); }
-        catch (e) { console.error('[User] Cloudinary delete failed during account deletion:', e.message); }
+        catch (e) { logger.error('[User] Cloudinary delete failed during account deletion:', e.message); }
       }
 
       // Delete Cloudant document
       await cloudant.deleteDocument({ db: DB_NAME, docId: userId, rev: existing._rev });
-      console.log(`[User] Account deleted from Cloudant: ${userId}`);
+      logger.info(`[User] Account deleted from Cloudant: ${userId}`);
     } catch (err) {
       if (err.status !== 404) throw err; // 404 = no profile, still destroy session
     }
@@ -360,9 +361,10 @@ router.delete('/account', ensureAuthenticated, async (req, res) => {
       return res.json({ success: true, message: 'Account permanently deleted.' });
     });
   } catch (err) {
-    console.error('[User] Delete account error:', err.message);
+    logger.error('[User] Delete account error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
 module.exports = router;
+

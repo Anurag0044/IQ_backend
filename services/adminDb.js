@@ -1,4 +1,4 @@
-// ============================================
+﻿// ============================================
 // CloudIQ Backend - Admin Database Service
 // ============================================
 // Manages the 'admins' Cloudant database.
@@ -9,10 +9,11 @@
 //   main_admin > co_admin > elder_admin > junior_admin
 
 const cloudant = require('./cloudantClient');
+const logger = require('../utils/logger');
 
 const ADMINS_DB = 'admins';
 
-// ─── Role hierarchy ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Role hierarchy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const ROLE_RANK = {
   main_admin:   4,
   co_admin:     3,
@@ -24,27 +25,27 @@ function rankOf(role) {
   return ROLE_RANK[role] ?? 0;
 }
 
-// ─── DB bootstrapping ────────────────────────────────────────────────────────
+// â”€â”€â”€ DB bootstrapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function ensureAdminsDb() {
   try {
     await cloudant.getDatabaseInformation({ db: ADMINS_DB });
-    console.log('[AdminDB] ✔ admins database exists');
+    logger.info('[AdminDB] âœ” admins database exists');
   } catch (err) {
     if (err.status === 404) {
       try {
         await cloudant.putDatabase({ db: ADMINS_DB });
-        console.log('[AdminDB] ✚ admins database created');
+        logger.info('[AdminDB] âœš admins database created');
       } catch (createErr) {
-        console.error('[AdminDB] ✖ Failed to create admins database:', createErr.message);
+        logger.error('[AdminDB] âœ– Failed to create admins database:', createErr.message);
       }
     } else {
-      console.error('[AdminDB] ✖ Error checking admins database:', err.message);
+      logger.error('[AdminDB] âœ– Error checking admins database:', err.message);
     }
   }
 }
 ensureAdminsDb();
 
-// ─── Super-admin (env var) helpers ───────────────────────────────────────────
+// â”€â”€â”€ Super-admin (env var) helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getSuperAdminEmails() {
   return (process.env.ADMIN_EMAILS || '')
     .split(',')
@@ -57,7 +58,7 @@ function isSuperAdmin(email) {
   return getSuperAdminEmails().includes(email.trim().toLowerCase());
 }
 
-// ─── Single-admin lookup ─────────────────────────────────────────────────────
+// â”€â”€â”€ Single-admin lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function getAdminDoc(email) {
   const id = email.trim().toLowerCase();
   try {
@@ -74,7 +75,7 @@ async function isAdminInDb(email) {
   return doc !== null;
 }
 
-// ─── Authoritative admin check (used by middleware) ──────────────────────────
+// â”€â”€â”€ Authoritative admin check (used by middleware) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function checkIsAdmin(email) {
   if (!email) return false;
   const n = email.trim().toLowerCase();
@@ -82,7 +83,7 @@ async function checkIsAdmin(email) {
   return isAdminInDb(n);
 }
 
-// ─── Get role of any admin ────────────────────────────────────────────────────
+// â”€â”€â”€ Get role of any admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function getAdminRole(email) {
   if (!email) return null;
   const n = email.trim().toLowerCase();
@@ -91,7 +92,7 @@ async function getAdminRole(email) {
   return doc ? (doc.role || 'junior_admin') : null;
 }
 
-// ─── Add admin ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Add admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function addAdmin(newAdminEmail, role = 'junior_admin', addedByEmail) {
   if (!newAdminEmail) return { success: false, message: 'Email is required' };
 
@@ -106,7 +107,7 @@ async function addAdmin(newAdminEmail, role = 'junior_admin', addedByEmail) {
     return { success: false, message: 'This email is the main admin' };
   }
 
-  // Permission check — only main_admin and co_admin can add
+  // Permission check â€” only main_admin and co_admin can add
   if (addedByEmail) {
     const adderRole = await getAdminRole(addedByEmail);
     if (!['main_admin', 'co_admin'].includes(adderRole)) {
@@ -130,16 +131,16 @@ async function addAdmin(newAdminEmail, role = 'junior_admin', addedByEmail) {
         created_at: new Date().toISOString(),
       },
     });
-    console.log(`[AdminDB] ✅ Added admin: ${n} as ${role}`);
+    logger.info(`[AdminDB] âœ… Added admin: ${n} as ${role}`);
     return { success: true, message: `${n} added as ${role}` };
   } catch (err) {
     if (err.status === 409) return { success: false, message: `${n} is already an admin` };
-    console.error('[AdminDB] Error adding admin:', err.message);
+    logger.error('[AdminDB] Error adding admin:', err.message);
     return { success: false, message: 'Failed to add admin: ' + err.message };
   }
 }
 
-// ─── Remove admin ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ Remove admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function removeAdmin(adminEmail, removedByEmail) {
   if (!adminEmail) return { success: false, message: 'Email is required' };
 
@@ -172,15 +173,15 @@ async function removeAdmin(adminEmail, removedByEmail) {
     const doc = await getAdminDoc(n);
     if (!doc) return { success: false, message: `${n} is not in the admin database` };
     await cloudant.deleteDocument({ db: ADMINS_DB, docId: n, rev: doc._rev });
-    console.log(`[AdminDB] ✅ Removed admin: ${n}`);
+    logger.info(`[AdminDB] âœ… Removed admin: ${n}`);
     return { success: true, message: `${n} removed from admins` };
   } catch (err) {
-    console.error('[AdminDB] Error removing admin:', err.message);
+    logger.error('[AdminDB] Error removing admin:', err.message);
     return { success: false, message: 'Failed to remove admin: ' + err.message };
   }
 }
 
-// ─── Update role ──────────────────────────────────────────────────────────────
+// â”€â”€â”€ Update role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function updateAdminRole(targetEmail, newRole, updatedByEmail) {
   const validRoles = ['co_admin', 'elder_admin', 'junior_admin'];
   if (!validRoles.includes(newRole)) {
@@ -216,15 +217,15 @@ async function updateAdminRole(targetEmail, newRole, updatedByEmail) {
     if (!doc) return { success: false, message: `${n} is not in the admin database` };
     const updated = { ...doc, role: newRole, updated_at: new Date().toISOString() };
     await cloudant.putDocument({ db: ADMINS_DB, docId: n, document: updated });
-    console.log(`[AdminDB] ✅ Updated admin role: ${n} → ${newRole}`);
+    logger.info(`[AdminDB] âœ… Updated admin role: ${n} â†’ ${newRole}`);
     return { success: true, message: `${n} role updated to ${newRole}` };
   } catch (err) {
-    console.error('[AdminDB] Error updating admin role:', err.message);
+    logger.error('[AdminDB] Error updating admin role:', err.message);
     return { success: false, message: 'Failed to update role: ' + err.message };
   }
 }
 
-// ─── List all admins ──────────────────────────────────────────────────────────
+// â”€â”€â”€ List all admins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function listAdmins() {
   const result = [];
 
@@ -260,7 +261,7 @@ async function listAdmins() {
       }
     }
   } catch (err) {
-    console.error('[AdminDB] Error listing admins:', err.message);
+    logger.error('[AdminDB] Error listing admins:', err.message);
   }
 
   return result;
@@ -276,3 +277,4 @@ module.exports = {
   isSuperAdmin,
   getSuperAdminEmails,
 };
+

@@ -5,6 +5,7 @@
 // FIXED: Added connect.sid as cookie name for broader compatibility
 
 const session = require('express-session');
+const { isProduction } = require('./env');
 
 /**
  * Creates and returns session middleware configuration
@@ -12,14 +13,14 @@ const session = require('express-session');
  */
 function configureSession() {
   return session({
-    secret: process.env.SESSION_SECRET || 'cloudiq-fallback-secret',
+    secret: process.env.SESSION_SECRET || 'cloudiq-development-session-secret',
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+      secure: isProduction,                           // HTTPS only in production
       httpOnly: true,                                 // Prevents client-side JS access
       maxAge: 24 * 60 * 60 * 1000,                   // 24 hours
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      sameSite: isProduction ? 'none' : 'lax',
     },
     // Use default 'connect.sid' cookie name for better Passport compatibility
     // Custom names can cause issues with some passport strategies

@@ -1,14 +1,14 @@
-// ============================================
+﻿// ============================================
 // CloudIQ Backend - Community Routes
 // ============================================
 // Endpoints:
-//   GET    /api/communities           → list communities (public)
-//   GET    /api/communities/:id       → get community by id (public)
-//   POST   /api/communities           → create community (auth)
-//   PUT    /api/communities/:id       → update community (auth, owner/co-admin/admin)
-//   DELETE /api/communities/:id       → delete community (auth, owner/co-admin/admin)
-//   POST   /api/communities/:id/join  → join community (auth)
-//   POST   /api/communities/:id/leave → leave community (auth)
+//   GET    /api/communities           â†’ list communities (public)
+//   GET    /api/communities/:id       â†’ get community by id (public)
+//   POST   /api/communities           â†’ create community (auth)
+//   PUT    /api/communities/:id       â†’ update community (auth, owner/co-admin/admin)
+//   DELETE /api/communities/:id       â†’ delete community (auth, owner/co-admin/admin)
+//   POST   /api/communities/:id/join  â†’ join community (auth)
+//   POST   /api/communities/:id/leave â†’ leave community (auth)
 
 const express = require('express');
 const multer = require('multer');
@@ -99,7 +99,7 @@ async function isCommunityMember(userId, community) {
     });
     return (res.result.rows || []).length > 0;
   } catch (err) {
-    console.warn('[COMMUNITIES] Membership lookup failed:', err.message);
+    logger.warn('[COMMUNITIES] Membership lookup failed:', err.message);
     return false;
   }
 }
@@ -115,7 +115,7 @@ async function createMembership(userId, username, userEmail, community, role = '
       includeDocs: true,
       limit: 1,
     });
-    if ((existing.result.rows || []).length > 0) return; // Already a member — idempotent
+    if ((existing.result.rows || []).length > 0) return; // Already a member â€” idempotent
 
     const now = new Date().toISOString();
     await cloudant.postDocument({
@@ -136,10 +136,10 @@ async function createMembership(userId, username, userEmail, community, role = '
         updated_at: now,
       },
     });
-    console.log(`[COMMUNITIES] Membership created: user=${userId} community=${community._id} role=${role}`);
+    logger.info(`[COMMUNITIES] Membership created: user=${userId} community=${community._id} role=${role}`);
   } catch (err) {
     if ((err.status || err.statusCode) === 409) return;
-    console.warn('[COMMUNITIES] Create membership failed:', err.message);
+    logger.warn('[COMMUNITIES] Create membership failed:', err.message);
   }
 }
 
@@ -157,7 +157,7 @@ async function removeMembership(userId, communityId) {
     const doc = existing.result.rows[0].doc;
     await cloudant.deleteDocument({ db: MEMBERS_DB, docId: doc._id, rev: doc._rev });
   } catch (err) {
-    console.warn('[COMMUNITIES] Remove membership failed:', err.message);
+    logger.warn('[COMMUNITIES] Remove membership failed:', err.message);
   }
 }
 
@@ -184,7 +184,7 @@ async function isFriendWithModerators(userId, community) {
     }
     return false;
   } catch (err) {
-    console.warn('[COMMUNITIES] Friend lookup failed:', err.message);
+    logger.warn('[COMMUNITIES] Friend lookup failed:', err.message);
     return false;
   }
 }
@@ -224,11 +224,11 @@ async function notifyCommunityModerators(req, community, senderId, senderName, s
   }
 }
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/communities
-// Public — list communities
+// Public â€” list communities
 // Optional: ?mine=true (requires auth)
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.get('/', async (req, res) => {
   try {
     const mine = isTruthy(req.query.mine);
@@ -289,7 +289,7 @@ router.get('/', async (req, res) => {
           limit,
         });
       } catch (viewErr) {
-        console.warn('[COMMUNITIES] Indexed list lookup failed, using bounded fallback:', viewErr.message);
+        logger.warn('[COMMUNITIES] Indexed list lookup failed, using bounded fallback:', viewErr.message);
         response = await cloudant.postAllDocs({
           db: DB,
           includeDocs: true,
@@ -349,7 +349,7 @@ router.get('/', async (req, res) => {
     }
     return res.json(payload);
   } catch (err) {
-    console.error('[COMMUNITIES] Fetch error:', err.message);
+    logger.error('[COMMUNITIES] Fetch error:', err.message);
     if (isCloudantRateLimit(err)) {
       return res.status(429).json({ success: false, error: 'Cloudant rate limit reached. Please retry shortly.' });
     }
@@ -357,10 +357,10 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/communities/:id
-// Public — fetch a single community
-// ─────────────────────────────────────────────
+// Public â€” fetch a single community
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.get('/:id', async (req, res) => {
   try {
     const community = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
@@ -389,15 +389,15 @@ router.get('/:id', async (req, res) => {
     return res.json({ success: true, community: sanitized });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Community not found' });
-    console.error('[COMMUNITIES] Get error:', err.message);
+    logger.error('[COMMUNITIES] Get error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to fetch community' });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/communities
-// Auth required — create a community
-// ─────────────────────────────────────────────
+// Auth required â€” create a community
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post(
   '/',
   ensureAuthenticated,
@@ -481,7 +481,7 @@ router.post(
         updated_at: new Date().toISOString(),
       };
       await firebaseService.syncChannel(defaultChannel).catch(err => {
-        console.warn('[COMMUNITIES] Failed to create default Firestore discussion channel:', err.message);
+        logger.warn('[COMMUNITIES] Failed to create default Firestore discussion channel:', err.message);
       });
 
       const io = req.app.get('io');
@@ -490,16 +490,16 @@ router.post(
 
       return res.status(201).json({ success: true, community: sanitizeCommunity(community) });
     } catch (err) {
-      console.error('[COMMUNITIES] Create error:', err.message);
+      logger.error('[COMMUNITIES] Create error:', err.message);
       return res.status(500).json({ success: false, error: 'Failed to create community' });
     }
   }
 );
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // PUT /api/communities/:id
-// Auth required — update a community (owner/co-admin/admin)
-// ─────────────────────────────────────────────
+// Auth required â€” update a community (owner/co-admin/admin)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.put(
   '/:id',
   ensureAuthenticated,
@@ -581,16 +581,16 @@ router.put(
 
       return res.json({ success: true, community: sanitizeCommunity(community) });
     } catch (err) {
-      console.error('[COMMUNITIES] Update error:', err.message);
+      logger.error('[COMMUNITIES] Update error:', err.message);
       return res.status(500).json({ success: false, error: 'Failed to update community' });
     }
   }
 );
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // DELETE /api/communities/:id
-// Auth required — delete a community (owner/co-admin/admin)
-// ─────────────────────────────────────────────
+// Auth required â€” delete a community (owner/co-admin/admin)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.delete('/:id', ensureAuthenticated, async (req, res) => {
   try {
     const { userId, email } = extractUserInfo(req.user);
@@ -627,7 +627,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
         await cloudant.deleteDocument({ db: MEMBERS_DB, docId: row.doc._id, rev: row.doc._rev });
       }
     } catch (e) {
-      console.error('[COMMUNITIES] Failed to cleanup memberships:', e.message);
+      logger.error('[COMMUNITIES] Failed to cleanup memberships:', e.message);
     }
 
     // Remove associated Firestore discussion channels and their messages
@@ -635,10 +635,10 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
       const channels = await firebaseService.listChannelsByCommunity(community._id);
       for (const channelDoc of channels) {
         await firebaseService.deleteChannel(channelDoc._id || channelDoc.id);
-        console.log(`[COMMUNITIES] Cleaned Firebase data for channel ${channelDoc._id || channelDoc.id}`);
+        logger.info(`[COMMUNITIES] Cleaned Firebase data for channel ${channelDoc._id || channelDoc.id}`);
       }
     } catch (e) {
-      console.error('[COMMUNITIES] Failed to cleanup Firestore channels/messages:', e.message);
+      logger.error('[COMMUNITIES] Failed to cleanup Firestore channels/messages:', e.message);
     }
 
     // Remove community
@@ -654,15 +654,15 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
     if (io) io.emit('community_deleted', { community_id: community._id });
     return res.json({ success: true, message: 'Community deleted safely' });
   } catch (err) {
-    console.error('[COMMUNITIES] Delete error:', err.message);
+    logger.error('[COMMUNITIES] Delete error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to delete community' });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/communities/:id/join
-// Auth required — join a community
-// ─────────────────────────────────────────────
+// Auth required â€” join a community
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post('/:id/join', ensureAuthenticated, async (req, res) => {
   try {
     const { userId, username, email } = extractUserInfo(req.user);
@@ -710,7 +710,7 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
           return res.status(202).json({ success: true, pending: true, request: pendingReq.doc });
         }
       } catch (e) {
-        console.warn('[COMMUNITIES] Request lookup failed:', e.message);
+        logger.warn('[COMMUNITIES] Request lookup failed:', e.message);
       }
 
       const { username } = extractUserInfo(req.user);
@@ -781,13 +781,13 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
         }
       } catch (err) {
         if (!isConflict(err) || attempt === 2) {
-          console.warn('[COMMUNITIES] Join community update failed (membership already created):', err.message);
+          logger.warn('[COMMUNITIES] Join community update failed (membership already created):', err.message);
           break;
         }
         try {
           updatedCommunity = (await cloudant.getDocument({ db: DB, docId: updatedCommunity._id })).result;
         } catch (refetchErr) {
-          console.warn('[COMMUNITIES] Join refetch failed:', refetchErr.message);
+          logger.warn('[COMMUNITIES] Join refetch failed:', refetchErr.message);
           break;
         }
       }
@@ -805,15 +805,15 @@ router.post('/:id/join', ensureAuthenticated, async (req, res) => {
 
     return res.json({ success: true, community: sanitized });
   } catch (err) {
-    console.error('[COMMUNITIES] Join error:', err.message);
+    logger.error('[COMMUNITIES] Join error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to join community' });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/communities/:id/leave
-// Auth required — leave a community
-// ─────────────────────────────────────────────
+// Auth required â€” leave a community
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
   try {
     const { userId } = extractUserInfo(req.user);
@@ -855,9 +855,9 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
     // Clean up Firebase discussion presence for this user in the community
     try {
       await firebaseService.updatePresence({ userId, communityId: community._id, status: 'offline' });
-      console.log(`[COMMUNITIES] Firebase leave cleanup done for user=${userId} community=${community._id}`);
+      logger.info(`[COMMUNITIES] Firebase leave cleanup done for user=${userId} community=${community._id}`);
     } catch (fbErr) {
-      console.warn('[COMMUNITIES] Firebase leave cleanup error:', fbErr.message);
+      logger.warn('[COMMUNITIES] Firebase leave cleanup error:', fbErr.message);
     }
 
     const io = req.app.get('io');
@@ -873,15 +873,15 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
 
     return res.json({ success: true, community: sanitizeCommunity(community) });
   } catch (err) {
-    console.error('[COMMUNITIES] Leave error:', err.message);
+    logger.error('[COMMUNITIES] Leave error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to leave community' });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/communities/:id/request
-// Auth required — create a join request (restricted communities)
-// ─────────────────────────────────────────────
+// Auth required â€” create a join request (restricted communities)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post('/:id/request', ensureAuthenticated, async (req, res) => {
   try {
     const { userId, username, email } = extractUserInfo(req.user);
@@ -949,15 +949,15 @@ router.post('/:id/request', ensureAuthenticated, async (req, res) => {
     return res.status(202).json({ success: true, pending: true, request: requestDoc });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Community not found' });
-    console.error('[COMMUNITIES] Request error:', err.message);
+    logger.error('[COMMUNITIES] Request error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to create request' });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/communities/:id/requests
-// Auth required — list pending requests (owner/co-admin/admin)
-// ─────────────────────────────────────────────
+// Auth required â€” list pending requests (owner/co-admin/admin)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.get('/:id/requests', ensureAuthenticated, async (req, res) => {
   try {
     const { userId, email } = extractUserInfo(req.user);
@@ -985,15 +985,15 @@ router.get('/:id/requests', ensureAuthenticated, async (req, res) => {
     return res.json({ success: true, requests });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Community not found' });
-    console.error('[COMMUNITIES] Requests fetch error:', err.message);
+    logger.error('[COMMUNITIES] Requests fetch error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to fetch requests' });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/communities/:id/requests/:requestId/approve
-// Auth required — approve join request
-// ─────────────────────────────────────────────
+// Auth required â€” approve join request
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req, res) => {
   try {
     const { userId, email } = extractUserInfo(req.user);
@@ -1065,15 +1065,15 @@ router.post('/:id/requests/:requestId/approve', ensureAuthenticated, async (req,
     return res.json({ success: true, community: sanitizeCommunity(community), request: requestDoc });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Request not found' });
-    console.error('[COMMUNITIES] Request approve error:', err.message);
+    logger.error('[COMMUNITIES] Request approve error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to approve request' });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/communities/:id/requests/:requestId/reject
-// Auth required — reject join request
-// ─────────────────────────────────────────────
+// Auth required â€” reject join request
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post('/:id/requests/:requestId/reject', ensureAuthenticated, async (req, res) => {
   try {
     const { userId, email } = extractUserInfo(req.user);
@@ -1123,10 +1123,11 @@ router.post('/:id/requests/:requestId/reject', ensureAuthenticated, async (req, 
     return res.json({ success: true, request: requestDoc });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Request not found' });
-    console.error('[COMMUNITIES] Request reject error:', err.message);
+    logger.error('[COMMUNITIES] Request reject error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to reject request' });
   }
 });
 
 module.exports = router;
+
 

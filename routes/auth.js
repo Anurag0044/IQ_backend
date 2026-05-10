@@ -11,9 +11,12 @@ const passport = require('passport');
 const { WebAppStrategy } = require('ibmcloud-appid');
 const { checkAdminRole, extractUserInfo } = require('../middleware/auth');
 const adminDb = require('../services/adminDb');
+const logger = require('../utils/logger');
+const { getFrontendUrl, joinUrl } = require('../config/env');
 
 const router = express.Router();
 const { ensureAuthenticated } = require('../middleware/authMiddleware');
+const FRONTEND_URL = getFrontendUrl();
 
 const hasAppIdCredentials = Boolean(
   process.env.APPID_TENANT_ID &&
@@ -25,7 +28,7 @@ const hasAppIdCredentials = Boolean(
 
 function ensureAppIdConfigured(_req, res, next) {
   if (!hasAppIdCredentials) {
-    console.warn('[AUTH] IBM App ID is not configured for /api/auth route.');
+    logger.warn('[AUTH] IBM App ID is not configured for /api/auth route.');
     return res.status(503).json({
       success: false,
       error: 'Authentication is not configured on this backend instance.',
@@ -49,23 +52,23 @@ router.get('/login', ensureAppIdConfigured, passport.authenticate(WebAppStrategy
  * Processes the auth code and creates a session
  */
 router.get('/callback', ensureAppIdConfigured, passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
-  failureRedirect: `${process.env.FRONTEND_URL}/?error=auth_failed`,
+  failureRedirect: joinUrl(FRONTEND_URL, '/?error=auth_failed') || '/?error=auth_failed',
   failureFlash: false,
 }), async (req, res) => {
   // Authentication successful — check role and redirect appropriately
   const email = (
     req.user?.email || req.user?.emails?.[0]?.value || ''
   ).toLowerCase();
-  console.log(`[AUTH] User authenticated: ${req.user?.name || email || 'Unknown'}`);
+  logger.info('[AUTH] User authenticated:', req.user?.name || email || 'Unknown');
 
   try {
     const isAdmin = await adminDb.checkIsAdmin(email);
     const redirectPath = isAdmin ? '/admin' : '/dashboard';
-    console.log(`[AUTH] Redirecting ${email} to ${process.env.FRONTEND_URL}${redirectPath}`);
-    res.redirect(`${process.env.FRONTEND_URL}${redirectPath}`);
+    logger.info('[AUTH] Redirecting authenticated user', { isAdmin, redirectPath });
+    res.redirect(joinUrl(FRONTEND_URL, redirectPath) || redirectPath);
   } catch (err) {
-    console.error('[AUTH] Admin check error, defaulting to /dashboard:', err.message);
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+    logger.error('[AUTH] Admin check error, defaulting to /dashboard:', err.message);
+    res.redirect(joinUrl(FRONTEND_URL, '/dashboard') || '/dashboard');
   }
 });
 
@@ -79,20 +82,20 @@ router.get('/logout', (req, res, next) => {
   try {
     WebAppStrategy.logout(req);
   } catch (e) {
-    console.error('[AUTH] WebAppStrategy.logout error:', e.message);
+    logger.error('[AUTH] WebAppStrategy.logout error:', e.message);
   }
 
   // Passport logout with required callback
   req.logout(function (err) {
     if (err) {
-      console.error('[AUTH] Passport logout error:', err);
+      logger.error('[AUTH] Passport logout error:', err);
       return next(err);
     }
 
     // Destroy the express session
     req.session.destroy((destroyErr) => {
       if (destroyErr) {
-        console.error('[AUTH] Session destruction error:', destroyErr);
+        logger.error('[AUTH] Session destruction error:', destroyErr);
       }
 
       // Clear all possible session cookies
@@ -100,7 +103,7 @@ router.get('/logout', (req, res, next) => {
       res.clearCookie('connect.sid');
 
       // Redirect to frontend landing page
-      res.redirect(process.env.FRONTEND_URL || '/');
+      res.redirect(FRONTEND_URL || '/');
     });
   });
 });
@@ -131,7 +134,7 @@ router.get('/user', async (req, res) => {
   try {
     isAdmin = await adminDb.checkIsAdmin(email);
   } catch (e) {
-    console.error('[AUTH] /auth/user admin check failed:', e.message);
+    logger.error('[AUTH] /auth/user admin check failed:', e.message);
   }
 
   // Build a safe user response (no tokens exposed to frontend)
@@ -175,7 +178,7 @@ router.get('/status', async (req, res) => {
  * GET /debug-user
  * DEBUG ONLY — dumps the raw user object from session
  * Use this to verify what App ID returns and where roles live
- * Visit: http://localhost:5000/auth/debug-user
+ * Visit the backend /auth/debug-user route in a non-production environment.
  */
 router.get('/debug-user', (req, res) => {
   if (process.env.NODE_ENV === 'production') {

@@ -9,12 +9,14 @@ const {
   getGitHubSession,
 } = require('../middleware/githubAuth');
 const { listUserRepositories } = require('../services/githubCodespacesService');
+const logger = require('../utils/logger');
+const { getBackendUrl, getFrontendUrl, joinUrl } = require('../config/env');
 
 const router = express.Router();
 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
-const CALLBACK_URL = process.env.GITHUB_CALLBACK_URL || `${BACKEND_URL}/api/github/callback`;
+const FRONTEND_URL = getFrontendUrl();
+const BACKEND_URL = getBackendUrl();
+const CALLBACK_URL = process.env.GITHUB_CALLBACK_URL || joinUrl(BACKEND_URL, '/api/github/callback');
 
 if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
   passport.use('github-labs', new GitHubStrategy({
@@ -31,9 +33,9 @@ if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
     });
   }));
 
-  console.log(`[GITHUB_AUTH] GitHub OAuth configured with callback ${CALLBACK_URL}`);
+  logger.info('[GITHUB_AUTH] GitHub OAuth configured', { callbackConfigured: Boolean(CALLBACK_URL) });
 } else {
-  console.warn('[GITHUB_AUTH] Missing GITHUB_CLIENT_ID or GITHUB_CLIENT_SECRET; GitHub lab login disabled.');
+  logger.warn('[GITHUB_AUTH] Missing GITHUB_CLIENT_ID or GITHUB_CLIENT_SECRET; GitHub lab login disabled.');
 }
 
 router.get('/status', ensureAuthenticated, (req, res) => {
@@ -55,7 +57,7 @@ router.get('/login',
   ensureAuthenticated,
   ensureGitHubOAuthConfigured,
   (req, res, next) => {
-    console.log('[GITHUB_AUTH] Starting GitHub OAuth connection.');
+    logger.info('[GITHUB_AUTH] Starting GitHub OAuth connection.');
     return passport.authenticate('github-labs', {
       scope: ['codespace', 'repo', 'read:user'],
       session: false,
@@ -113,12 +115,12 @@ router.get('/callback',
   (req, res, next) => {
     passport.authenticate('github-labs', { session: false }, (err, githubProfile) => {
       if (err) {
-        console.error('[GITHUB_AUTH] Callback error:', err.message || err);
+        logger.error('[GITHUB_AUTH] Callback error:', err.message || err);
         return res.redirect(`${FRONTEND_URL}/labs?github=error`);
       }
 
       if (!githubProfile?.accessToken) {
-        console.warn('[GITHUB_AUTH] Callback did not return an access token.');
+        logger.warn('[GITHUB_AUTH] Callback did not return an access token.');
         return res.redirect(`${FRONTEND_URL}/labs?github=failed`);
       }
 
@@ -133,11 +135,13 @@ router.get('/callback',
 
       req.session.save((saveErr) => {
         if (saveErr) {
-          console.error('[GITHUB_AUTH] Failed to save GitHub token in session:', saveErr.message);
+          logger.error('[GITHUB_AUTH] Failed to save GitHub token in session:', saveErr.message);
           return res.redirect(`${FRONTEND_URL}/labs?github=session_error`);
         }
 
-        console.log(`[GITHUB_AUTH] Connected GitHub account ${githubProfile.username || githubProfile.id}.`);
+        logger.info('[GITHUB_AUTH] Connected GitHub account.', {
+          githubUser: githubProfile.username || githubProfile.id,
+        });
         return res.redirect(`${FRONTEND_URL}/labs?github=connected`);
       });
     })(req, res, next);
@@ -148,7 +152,7 @@ router.post('/logout', ensureAuthenticated, (req, res) => {
   if (req.session) {
     delete req.session.github;
   }
-  console.log('[GITHUB_AUTH] GitHub connection removed from session.');
+  logger.info('[GITHUB_AUTH] GitHub connection removed from session.');
   return res.json({ success: true, message: 'GitHub disconnected.' });
 });
 

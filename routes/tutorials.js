@@ -1,15 +1,15 @@
-// ============================================
+﻿// ============================================
 // CloudIQ Backend - Tutorials Routes
 // ============================================
 // Admin-only: create, delete, upload-inline-image
 // Public:     read all / read one
 //
 // Endpoints:
-//   POST   /api/tutorials/create              — admin only, multipart/form-data
-//   POST   /api/tutorials/upload-inline-image — admin only, returns image URL
-//   GET    /api/tutorials                     — public
-//   GET    /api/tutorials/:id                 — public
-//   DELETE /api/tutorials/:id                 — admin only
+//   POST   /api/tutorials/create              â€” admin only, multipart/form-data
+//   POST   /api/tutorials/upload-inline-image â€” admin only, returns image URL
+//   GET    /api/tutorials                     â€” public
+//   GET    /api/tutorials/:id                 â€” public
+//   DELETE /api/tutorials/:id                 â€” admin only
 
 const express    = require('express');
 const multer     = require('multer');
@@ -22,9 +22,9 @@ const logger = require('../utils/logger');
 const router  = express.Router();
 const DB_NAME = 'tutorials';
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Multer configs
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Cover image/video: image 10 MB, video 50 MB
 const upload = multer({
@@ -65,11 +65,11 @@ const uploadInline = multer({
   },
 });
 
-// ─────────────────────────────────────────────
-// Helper — extract Cloudinary public_id from URL
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Helper â€” extract Cloudinary public_id from URL
 // Handles: .../upload/v<ver>/<folder>/<name>.<ext>
 //          .../upload/<folder>/<name>.<ext>
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function extractPublicId(imageUrl) {
   if (!imageUrl) return null;
   try {
@@ -87,7 +87,7 @@ async function isCommunityMember(userId, communityId) {
     if (Array.isArray(community.members) && community.members.includes(userId)) return true;
   } catch (err) {
     if (err.status !== 404) {
-      console.warn('[Tutorials] Community lookup failed:', err.message);
+      logger.warn('[Tutorials] Community lookup failed:', err.message);
     }
   }
 
@@ -99,7 +99,7 @@ async function isCommunityMember(userId, communityId) {
     });
     return res.result.docs.length > 0;
   } catch (err) {
-    console.warn('[Tutorials] Membership lookup failed:', err.message);
+    logger.warn('[Tutorials] Membership lookup failed:', err.message);
     return false;
   }
 }
@@ -112,22 +112,22 @@ async function isCommunityModerator(userId, communityId) {
     if (Array.isArray(community.co_admin_ids) && community.co_admin_ids.includes(userId)) return true;
   } catch (err) {
     if (err.status !== 404) {
-      console.warn('[Tutorials] Community lookup failed:', err.message);
+      logger.warn('[Tutorials] Community lookup failed:', err.message);
     }
   }
   return false;
 }
 
-// ─────────────────────────────────────────────
-// Helper — ensure tutorials DB + design doc exist
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Helper â€” ensure tutorials DB + design doc exist
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function ensureTutorialsDb() {
   try {
     await cloudant.getDatabaseInformation({ db: DB_NAME });
   } catch (err) {
     if (err.status === 404) {
       await cloudant.putDatabase({ db: DB_NAME });
-      console.log('[Tutorials] Created tutorials database');
+      logger.info('[Tutorials] Created tutorials database');
       await cloudant.postDocument({
         db: DB_NAME,
         document: {
@@ -145,10 +145,10 @@ async function ensureTutorialsDb() {
 
 ensureTutorialsDb().catch(console.error);
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/tutorials/create
-// Admin only — creates a new tutorial with cover image upload
-// ─────────────────────────────────────────────
+// Admin only â€” creates a new tutorial with cover image upload
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post(
   '/create',
   ensureAuthenticated,
@@ -253,7 +253,7 @@ router.post(
 
       const tutorialId = uuidv4();
 
-      // Build tutorial document — supports HTML or markdown
+      // Build tutorial document â€” supports HTML or markdown
       const tutorial = {
         _id:               tutorialId,
         title:             title.trim(),
@@ -262,7 +262,7 @@ router.post(
         content_markdown:  content_markdown?.trim() || '',
         content_format:    content_markdown?.trim() ? 'markdown' : 'html',
         image_url,
-        public_id,   // internal Cloudinary ID — NOT sent to frontend
+        public_id,   // internal Cloudinary ID â€” NOT sent to frontend
         video_url,
         video_public_id,
         category:          category || 'General',
@@ -283,7 +283,7 @@ router.post(
       if (public_id) await recordTutorialMedia({ tutorialId, url: image_url, publicId: public_id, resourceType: 'image' });
       if (video_public_id) await recordTutorialMedia({ tutorialId, url: video_url, publicId: video_public_id, resourceType: 'video' });
 
-      console.log(`[Tutorials] Created: "${title}" by ${email || 'unknown'}`);
+      logger.info(`[Tutorials] Created: "${title}" by ${email || 'unknown'}`);
 
       return res.status(201).json({
         success: true,
@@ -305,18 +305,18 @@ router.post(
         },
       });
     } catch (err) {
-      console.error('[Tutorials] Create error:', err.message);
+      logger.error('[Tutorials] Create error:', err.message);
       return res.status(500).json({ success: false, error: err.message });
     }
   }
 );
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/tutorials/upload-inline-image
-// Auth required — uploads a single media file for use inside tutorial content
+// Auth required â€” uploads a single media file for use inside tutorial content
 // Body: multipart/form-data with field "image" or "media"
 // Returns: { success: true, url, public_id, resource_type }
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post(
   '/upload-inline-image',
   ensureAuthenticated,
@@ -367,11 +367,11 @@ router.post(
         });
       }
 
-      console.log(`[Tutorials] Inline media uploaded: ${result.public_id}`);
+      logger.info(`[Tutorials] Inline media uploaded: ${result.public_id}`);
 
       return res.json({ success: true, url: result.secure_url, public_id: result.public_id, resource_type: isVideo ? 'video' : 'image' });
     } catch (err) {
-      console.error('[Tutorials] Inline image upload error:', err.message);
+      logger.error('[Tutorials] Inline image upload error:', err.message);
       return res.status(500).json({ success: false, error: err.message });
     }
   }
@@ -428,21 +428,21 @@ router.post(
         });
       }
 
-      console.log(`[Tutorials] Inline media uploaded: ${result.public_id}`);
+      logger.info(`[Tutorials] Inline media uploaded: ${result.public_id}`);
 
       return res.json({ success: true, url: result.secure_url, public_id: result.public_id, resource_type: isVideo ? 'video' : 'image' });
     } catch (err) {
-      console.error('[Tutorials] Inline media upload error:', err.message);
+      logger.error('[Tutorials] Inline media upload error:', err.message);
       return res.status(500).json({ success: false, error: err.message });
     }
   }
 );
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // DELETE /api/tutorials/image
-// Auth required — deletes an inline media asset by public_id
+// Auth required â€” deletes an inline media asset by public_id
 // Body: { public_id: "...", resource_type?: "image"|"video" }
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.delete(
   '/image',
   ensureAuthenticated,
@@ -454,20 +454,20 @@ router.delete(
       }
 
       await deleteUploadedMedia(public_id, resource_type || 'image');
-      console.log(`[Tutorials] Inline media deleted: ${public_id}`);
+      logger.info(`[Tutorials] Inline media deleted: ${public_id}`);
 
       return res.json({ success: true, message: 'Image deleted successfully' });
     } catch (err) {
-      console.error('[Tutorials] Inline image delete error:', err.message);
+      logger.error('[Tutorials] Inline image delete error:', err.message);
       return res.status(500).json({ success: false, error: err.message });
     }
   }
 );
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/tutorials
-// Public — returns all tutorials, newest first
-// ─────────────────────────────────────────────
+// Public â€” returns all tutorials, newest first
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.get('/', async (req, res) => {
   try {
     // NOTE: IBM Cloudant SDK requires includeDocs at TOP level, not inside allDocsQuery
@@ -486,15 +486,15 @@ router.get('/', async (req, res) => {
 
     return res.json({ success: true, total: tutorials.length, data: tutorials });
   } catch (err) {
-    console.error('[Tutorials] Get all error:', err.message);
+    logger.error('[Tutorials] Get all error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // PUT /api/tutorials/:id
-// Admin only — update title/description/content/image
-// ─────────────────────────────────────────────
+// Admin only â€” update title/description/content/image
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.put(
   '/:id',
   ensureAuthenticated,
@@ -541,7 +541,7 @@ router.put(
         const oldId = existing.public_id || extractPublicId(existing.image_url);
         if (oldId) {
           try { await deleteUploadedMedia(oldId, 'image'); } catch (e) {
-            console.error('[Tutorials] Old image delete failed (continuing):', e.message);
+            logger.error('[Tutorials] Old image delete failed (continuing):', e.message);
           }
         }
         const uploaded = await uploadImage({
@@ -561,7 +561,7 @@ router.put(
       if (videoFile) {
         if (video_public_id) {
           try { await deleteUploadedMedia(video_public_id, 'video'); } catch (e) {
-            console.error('[Tutorials] Old video delete failed (continuing):', e.message);
+            logger.error('[Tutorials] Old video delete failed (continuing):', e.message);
           }
         }
         const uploaded = await uploadVideo({
@@ -601,26 +601,26 @@ router.put(
         updated_at: new Date().toISOString(),
       };
 
-      // Cloudant update — must include _rev in the document body
+      // Cloudant update â€” must include _rev in the document body
       await cloudant.putDocument({ db: DB_NAME, docId: id, document: updated });
 
-      console.log(`[Tutorials] Updated: "${updated.title}" (${id})`);
+      logger.info(`[Tutorials] Updated: "${updated.title}" (${id})`);
 
       // Strip internal fields before returning
       const { public_id: _p, _rev: _r, video_public_id: _v, ...safeData } = updated;
       return res.json({ success: true, data: safeData });
     } catch (err) {
       if (err.status === 404) return res.status(404).json({ success: false, error: 'Tutorial not found' });
-      console.error('[Tutorials] Update error:', err.message);
+      logger.error('[Tutorials] Update error:', err.message);
       return res.status(500).json({ success: false, error: err.message });
     }
   }
 );
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/tutorials/:id
-// Public — returns one tutorial by id
-// ─────────────────────────────────────────────
+// Public â€” returns one tutorial by id
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
   try {
@@ -631,16 +631,16 @@ router.get('/:id', async (req, res) => {
     if (err.status === 404) {
       return res.status(404).json({ success: false, error: 'Tutorial not found' });
     }
-    console.error('[Tutorials] Get one error:', err.message);
+    logger.error('[Tutorials] Get one error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // DELETE /api/tutorials/:id
-// Admin only — deletes Cloudinary image THEN Cloudant document
+// Admin only â€” deletes Cloudinary image THEN Cloudant document
 // Cloudinary failure does NOT block the Cloudant deletion
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.delete('/:id', ensureAuthenticated, async (req, res) => {
   const { id } = req.params;
   try {
@@ -664,48 +664,49 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
     //   Fallback: parse from image_url (handles legacy docs without public_id)
     const publicIdToDelete = doc.public_id || extractPublicId(doc.image_url);
 
-    // Step 3: Delete Cloudinary image — non-blocking, DB delete happens either way
+    // Step 3: Delete Cloudinary image â€” non-blocking, DB delete happens either way
     if (publicIdToDelete) {
       try {
         await deleteUploadedMedia(publicIdToDelete, 'image');
-        console.log(`[Tutorials] Cloudinary image deleted: ${publicIdToDelete}`);
+        logger.info(`[Tutorials] Cloudinary image deleted: ${publicIdToDelete}`);
       } catch (cloudErr) {
-        console.error('[Tutorials] Cloudinary delete failed (continuing):', cloudErr.message);
+        logger.error('[Tutorials] Cloudinary delete failed (continuing):', cloudErr.message);
       }
     }
 
     if (doc.video_public_id) {
       try {
         await deleteUploadedMedia(doc.video_public_id, 'video');
-        console.log(`[Tutorials] Cloudinary video deleted: ${doc.video_public_id}`);
+        logger.info(`[Tutorials] Cloudinary video deleted: ${doc.video_public_id}`);
       } catch (cloudErr) {
-        console.error('[Tutorials] Cloudinary video delete failed (continuing):', cloudErr.message);
+        logger.error('[Tutorials] Cloudinary video delete failed (continuing):', cloudErr.message);
       }
     }
 
     // Step 4: Delete document from Cloudant
     await cloudant.deleteDocument({ db: DB_NAME, docId: id, rev: doc._rev });
 
-    console.log(`[Tutorials] Deleted tutorial: "${doc.title}" (${id})`);
+    logger.info(`[Tutorials] Deleted tutorial: "${doc.title}" (${id})`);
     return res.json({ success: true, message: `Tutorial "${doc.title}" deleted successfully` });
   } catch (err) {
     if (err.status === 404) {
       return res.status(404).json({ success: false, error: 'Tutorial not found' });
     }
-    console.error('[Tutorials] Delete error:', err.message);
+    logger.error('[Tutorials] Delete error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Multer error handler
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.use((err, req, res, _next) => {
   if (err instanceof multer.MulterError || err.message?.includes('Only')) {
     return res.status(400).json({ success: false, error: err.message });
   }
-  console.error('[Tutorials] Unexpected error:', err);
+  logger.error('[Tutorials] Unexpected error:', err);
   return res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
 module.exports = router;
+

@@ -1,4 +1,4 @@
-# CloudIQ Backend
+﻿# CloudIQ Backend
 
 Production-ready Express backend for CloudIQ: authentication, communities, realtime discussions, brainstorming, Orion AI, Firebase persistence, Cloudinary media, GitHub OAuth, and GitHub Codespaces-powered labs.
 
@@ -314,7 +314,7 @@ npm start
 ### Health Check
 
 ```bash
-curl http://localhost:5000/
+curl <BACKEND_URL>/
 ```
 
 Expected response:
@@ -339,7 +339,7 @@ Use a real `.env` file locally and secure environment variables in production.
 | --- | --- | --- | --- |
 | `NODE_ENV` | Recommended | `development` or `production` | Controls secure cookies, debug behavior, and stack trace exposure. |
 | `PORT` | No | `5000` | Backend port. Defaults to `5000`. |
-| `FRONTEND_URL` | Yes | `http://localhost:5173` | Frontend origin for CORS and auth redirects. |
+| `FRONTEND_URL` | Yes | `<FRONTEND_URL>` | Frontend origin for CORS and auth redirects. |
 | `BACKEND_URL` | Recommended | `https://api.example.com` | Public backend URL used by GitHub OAuth callback helpers. |
 | `SESSION_SECRET` | Yes | `change-me-long-random-secret` | Express session signing secret. Use a long random value in production. |
 | `LOG_LEVEL` | No | `info` | Logging level: `debug`, `info`, `warn`, or `error`. |
@@ -354,7 +354,7 @@ Use a real `.env` file locally and secure environment variables in production.
 | `APPID_CLIENT_ID` | Yes | `client-id` | IBM App ID client ID. |
 | `APPID_SECRET` | Yes | `client-secret` | IBM App ID client secret. |
 | `APPID_OAUTH_SERVER_URL` | Yes | `https://...appid.cloud.ibm.com/oauth/v4/...` | IBM App ID OAuth server URL. |
-| `APPID_REDIRECT_URI` | Yes | `http://localhost:5000/auth/callback` | Redirect URI configured in IBM App ID. |
+| `APPID_REDIRECT_URI` | Yes | `<BACKEND_URL>/auth/callback` | Redirect URI configured in IBM App ID. |
 | `ADMIN_ROLE_NAME` | No | `admin` | Role name used for admin detection in some auth paths. |
 | `ADMIN_EMAILS` | Recommended | `admin@example.com,owner@example.com` | Super admin email allowlist. |
 
@@ -391,7 +391,7 @@ Use a real `.env` file locally and secure environment variables in production.
 | --- | --- | --- | --- |
 | `GITHUB_CLIENT_ID` | Required for GitHub OAuth | `github-oauth-client-id` | GitHub OAuth app client ID. |
 | `GITHUB_CLIENT_SECRET` | Required for GitHub OAuth | `github-oauth-secret` | GitHub OAuth app client secret. |
-| `GITHUB_CALLBACK_URL` | Recommended | `http://localhost:5000/api/github/callback` | GitHub OAuth callback URL. |
+| `GITHUB_CALLBACK_URL` | Recommended | `<BACKEND_URL>/api/github/callback` | GitHub OAuth callback URL. |
 | `GITHUB_API_VERSION` | No | `2026-03-10` | GitHub REST API version header. |
 | `LAB_TOKEN_ENCRYPTION_KEY` | Recommended | `32-byte-secret` | Secret used to encrypt lab/GitHub token data. Falls back to `SESSION_SECRET`. |
 | `LAB_TTL_MINUTES` | No | `120` | Default active lab lifetime before cleanup. |
@@ -425,8 +425,8 @@ Use a real `.env` file locally and secure environment variables in production.
 ```env
 NODE_ENV=development
 PORT=5000
-FRONTEND_URL=http://localhost:5173
-BACKEND_URL=http://localhost:5000
+FRONTEND_URL=<FRONTEND_URL>
+BACKEND_URL=<BACKEND_URL>
 SESSION_SECRET=replace-with-a-long-random-secret
 LOG_LEVEL=debug
 
@@ -434,7 +434,7 @@ APPID_TENANT_ID=
 APPID_CLIENT_ID=
 APPID_SECRET=
 APPID_OAUTH_SERVER_URL=
-APPID_REDIRECT_URI=http://localhost:5000/auth/callback
+APPID_REDIRECT_URI=<BACKEND_URL>/auth/callback
 ADMIN_EMAILS=admin@example.com
 
 FIREBASE_PROJECT_ID=
@@ -451,7 +451,7 @@ CLOUDANT_URL=
 
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
-GITHUB_CALLBACK_URL=http://localhost:5000/api/github/callback
+GITHUB_CALLBACK_URL=<BACKEND_URL>/api/github/callback
 GITHUB_API_VERSION=2026-03-10
 LAB_TOKEN_ENCRYPTION_KEY=
 LAB_TTL_MINUTES=120
@@ -934,7 +934,7 @@ server {
     server_name api.example.com;
 
     location / {
-        proxy_pass http://127.0.0.1:5000;
+        proxy_pass <BACKEND_URL>;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -1199,7 +1199,7 @@ Check:
 Common callback URL:
 
 ```text
-http://localhost:5000/api/github/callback
+<BACKEND_URL>/api/github/callback
 ```
 
 Production callback:
@@ -1290,7 +1290,7 @@ fetch(url, { credentials: "include" });
 Base URL:
 
 ```text
-http://localhost:5000
+<BACKEND_URL>
 ```
 
 Production:
@@ -1524,3 +1524,4 @@ ORION_BRAINSTORM_MAX_TOKENS=900
 ```
 
 Use Node 20 LTS, keep secrets in your hosting provider's environment manager, and verify Firebase, Cloudinary, GitHub OAuth, Cloudant, and Orion credentials before shipping.
+

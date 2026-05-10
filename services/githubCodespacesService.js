@@ -1,5 +1,6 @@
 const axios = require('axios');
 const crypto = require('crypto');
+const logger = require('../utils/logger');
 
 const GITHUB_API_BASE = 'https://api.github.com';
 const GITHUB_API_VERSION = process.env.GITHUB_API_VERSION || '2026-03-10';
@@ -27,9 +28,9 @@ function recoverableCodespaceResult(action, codespaceName, err) {
   const alreadyRemoved = status === 404;
 
   if (alreadyRemoved) {
-    console.warn(`[LABS][GITHUB] Codespace ${codespaceName} was already gone during ${action}.`);
+    logger.warn(`[LABS][GITHUB] Codespace ${codespaceName} was already gone during ${action}.`);
   } else {
-    console.warn(`[LABS][GITHUB] Recoverable codespace ${action} failure (${status}): ${message}`);
+    logger.warn(`[LABS][GITHUB] Recoverable codespace ${action} failure (${status}): ${message}`);
   }
 
   return {
@@ -79,7 +80,7 @@ function parsePublicGitHubRepoUrl(repoUrl) {
 }
 
 async function fetchRepositoryDetails(accessToken, repoRef) {
-  console.log(`[LABS][GITHUB] Fetching repository ${repoRef.owner}/${repoRef.repo}`);
+  logger.debug(`[LABS][GITHUB] Fetching repository ${repoRef.owner}/${repoRef.repo}`);
   try {
     const response = await axios.get(
       `${GITHUB_API_BASE}/repos/${encodeURIComponent(repoRef.owner)}/${encodeURIComponent(repoRef.repo)}`,
@@ -89,7 +90,7 @@ async function fetchRepositoryDetails(accessToken, repoRef) {
   } catch (err) {
     const status = err.response?.status;
     const message = apiErrorMessage(err);
-    console.error(`[LABS][GITHUB] Repository fetch failed (${status || 'no-status'}): ${message}`);
+    logger.error(`[LABS][GITHUB] Repository fetch failed (${status || 'no-status'}): ${message}`);
     const wrapped = new Error(status === 404 ? 'Repository not found or inaccessible.' : message);
     wrapped.statusCode = status === 404 ? 404 : 502;
     throw wrapped;
@@ -97,7 +98,7 @@ async function fetchRepositoryDetails(accessToken, repoRef) {
 }
 
 async function createCodespace(accessToken, repoRef, options = {}) {
-  console.log(`[LABS][GITHUB] Creating codespace for ${repoRef.owner}/${repoRef.repo}`);
+  logger.info(`[LABS][GITHUB] Creating codespace for ${repoRef.owner}/${repoRef.repo}`);
   try {
     const body = {
       idle_timeout_minutes: options.idleTimeoutMinutes || 30,
@@ -114,7 +115,7 @@ async function createCodespace(accessToken, repoRef, options = {}) {
   } catch (err) {
     const status = err.response?.status;
     const message = apiErrorMessage(err);
-    console.error(`[LABS][GITHUB] Codespace create failed (${status || 'no-status'}): ${message}`);
+    logger.error(`[LABS][GITHUB] Codespace create failed (${status || 'no-status'}): ${message}`);
     const wrapped = new Error(message);
     wrapped.statusCode = status === 401 ? 401 : status === 403 ? 403 : 502;
     throw wrapped;
@@ -136,7 +137,7 @@ function validateCodespaceDeleteInput(accessToken, codespaceName) {
 }
 
 async function fetchCodespace(accessToken, codespaceName, options = {}) {
-  console.log(`[LABS][GITHUB] Fetching codespace ${codespaceName}`);
+  logger.debug(`[LABS][GITHUB] Fetching codespace ${codespaceName}`);
   try {
     validateCodespaceDeleteInput(accessToken, codespaceName);
     const response = await axios.get(
@@ -155,7 +156,7 @@ async function fetchCodespace(accessToken, codespaceName, options = {}) {
 
     const status = err.response?.status;
     const message = apiErrorMessage(err);
-    console.error(`[LABS][GITHUB] Codespace fetch failed (${status || 'no-status'}): ${message}`);
+    logger.error(`[LABS][GITHUB] Codespace fetch failed (${status || 'no-status'}): ${message}`);
     const wrapped = new Error(message);
     wrapped.statusCode = status === 401 ? 401 : status === 403 ? 403 : status === 404 ? 404 : 502;
     throw wrapped;
@@ -163,7 +164,7 @@ async function fetchCodespace(accessToken, codespaceName, options = {}) {
 }
 
 async function stopCodespace(accessToken, codespaceName, options = {}) {
-  console.log(`[LABS][GITHUB] Stopping codespace ${codespaceName}`);
+  logger.info(`[LABS][GITHUB] Stopping codespace ${codespaceName}`);
   try {
     validateCodespaceDeleteInput(accessToken, codespaceName);
     await axios.post(
@@ -182,7 +183,7 @@ async function stopCodespace(accessToken, codespaceName, options = {}) {
 
     const status = err.response?.status;
     const message = apiErrorMessage(err);
-    console.error(`[LABS][GITHUB] Codespace stop failed (${status || 'no-status'}): ${message}`);
+    logger.error(`[LABS][GITHUB] Codespace stop failed (${status || 'no-status'}): ${message}`);
     const wrapped = new Error(message);
     wrapped.statusCode = status === 401 ? 401 : status === 403 ? 403 : status === 404 ? 404 : 502;
     throw wrapped;
@@ -190,7 +191,7 @@ async function stopCodespace(accessToken, codespaceName, options = {}) {
 }
 
 async function deleteCodespace(accessToken, codespaceName, options = {}) {
-  console.log(`[LABS][GITHUB] Deleting codespace ${codespaceName}`);
+  logger.info(`[LABS][GITHUB] Deleting codespace ${codespaceName}`);
   try {
     validateCodespaceDeleteInput(accessToken, codespaceName);
     await axios.delete(
@@ -209,7 +210,7 @@ async function deleteCodespace(accessToken, codespaceName, options = {}) {
 
     const status = err.response?.status;
     const message = apiErrorMessage(err);
-    console.error(`[LABS][GITHUB] Codespace delete failed (${status || 'no-status'}): ${message}`);
+    logger.error(`[LABS][GITHUB] Codespace delete failed (${status || 'no-status'}): ${message}`);
     const wrapped = new Error(message);
     wrapped.statusCode = status === 401 ? 401 : status === 403 ? 403 : 502;
     throw wrapped;

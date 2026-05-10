@@ -7,6 +7,7 @@ const express = require('express');
 const cloudant = require('../services/cloudantClient');
 const { ensureAuthenticated, extractUserInfo } = require('../middleware/auth');
 const { TTLCache } = require('../services/cacheService');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 const DB = 'notifications';
@@ -29,7 +30,7 @@ router.get('/', ensureAuthenticated, async (req, res) => {
     const cacheKey = `notifications:${userId}:${limit}`;
     const cached = notificationsCache.get(cacheKey);
     if (cached) {
-      console.log('[API] duplicate request prevented /api/notifications');
+      logger.debug('[API] duplicate request prevented /api/notifications');
       return res.json(cached);
     }
 

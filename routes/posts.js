@@ -15,6 +15,7 @@ const { uploadImage, uploadVideo, deleteUploadedMedia } = require('../services/m
 const { resolveSenderInfo, createNotification } = require('../services/notificationService');
 const { ensureAuthenticated, checkAdminRole, extractUserInfo } = require('../middleware/auth');
 const { TTLCache } = require('../services/cacheService');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 const DB = 'posts';
@@ -78,7 +79,7 @@ router.get('/', async (req, res) => {
     const cacheKey = `posts:${limit}:${before || 'latest'}`;
     const cached = postsCache.get(cacheKey);
     if (cached) {
-      console.log('[API] duplicate request prevented /api/posts');
+      logger.debug('[API] duplicate request prevented /api/posts');
       return res.json(cached);
     }
 

@@ -17,6 +17,7 @@ const { v4: uuidv4 } = require('uuid');
 const cloudant   = require('../services/cloudantClient');
 const { uploadImage, uploadVideo, deleteUploadedMedia, recordTutorialMedia } = require('../services/mediaService');
 const { ensureAuthenticated, extractUserInfo, checkAdminRole } = require('../middleware/auth');
+const logger = require('../utils/logger');
 
 const router  = express.Router();
 const DB_NAME = 'tutorials';
@@ -481,7 +482,7 @@ router.get('/', async (req, res) => {
       .map(({ public_id, _rev, ...safe }) => safe) // strip internal fields
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-    console.log(`[Tutorials] GET all -> ${tutorials.length} tutorial(s)`);
+    logger.debug(`[Tutorials] GET all -> ${tutorials.length} tutorial(s)`);
 
     return res.json({ success: true, total: tutorials.length, data: tutorials });
   } catch (err) {

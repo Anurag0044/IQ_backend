@@ -18,6 +18,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const { WebAppStrategy } = require('ibmcloud-appid');
+const logger = require('./utils/logger');
 const { extractUserInfo } = require('./middleware/auth');
 const { adminCache } = require('./services/cacheService');
 const githubAuthRoutes = require("./routes/githubAuth");
@@ -81,7 +82,7 @@ const { startStatsBroadcaster } = require('./services/statsService');
 startStatsBroadcaster(io);
 
 io.on('connection', (socket) => {
-  console.log(`[SOCKET] Client connected: ${socket.id}`);
+  logger.debug('[SOCKET] Client connected', { socketId: socket.id });
 
   socket.on('register', (payload) => {
     const rawUserId = typeof payload === 'string'
@@ -115,7 +116,7 @@ io.on('connection', (socket) => {
     }
     userSockets.set(userId, socket.id);
     socket.data.userId = userId;
-    console.log(`[SOCKET] User mapped: ${userId} -> ${socket.id}`);
+    logger.debug('[SOCKET] User registered', { userId, socketId: socket.id });
   });
 
   socket.on('watch_post', (postId) => {
@@ -127,7 +128,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log(`[SOCKET] Client disconnected: ${socket.id}`);
+    logger.debug('[SOCKET] Client disconnected', { socketId: socket.id });
     for (let [userId, socketId] of userSockets.entries()) {
       if (socketId === socket.id) {
         userSockets.delete(userId);
@@ -162,7 +163,18 @@ app.use(cors({
 // ─────────────────────────────────────────────
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: process.env.FORM_BODY_LIMIT || '1mb' }));
-app.use(morgan('dev'));
+app.use(morgan(':method :url :status :response-time ms', {
+  skip: (_req, res) => res.statusCode < 400 && !logger.shouldLog('debug'),
+  stream: {
+    write: (message) => {
+      const line = message.trim();
+      const status = Number(line.match(/\s(\d{3})\s/)?.[1] || 0);
+      if (status >= 500) logger.error('[HTTP]', line);
+      else if (status >= 400) logger.warn('[HTTP]', line);
+      else logger.debug('[HTTP]', line);
+    },
+  },
+}));
 
 // ─────────────────────────────────────────────
 // 4. Session — MUST be before Passport
@@ -202,7 +214,7 @@ if (hasAppIdCredentials) {
     redirectUri: process.env.APPID_REDIRECT_URI,
   }));
 } else {
-  console.warn('[AUTH] IBM App ID credentials are missing. Authentication routes will return a 503 until configured.');
+  logger.warn('[AUTH] IBM App ID credentials are missing. Authentication routes will return a 503 until configured.');
 }
 
 // Store entire user object in session
@@ -243,34 +255,34 @@ app.get('/auth/callback', (req, res, next) => {
   passport.authenticate(WebAppStrategy.STRATEGY_NAME, (err, user, info) => {
     // Handle authentication errors
     if (err) {
-      console.error('[AUTH] ❌ Callback error:', err.message || err);
+      logger.error('[AUTH] Callback error:', err.message || err);
       return res.redirect(FRONTEND_URL + '/?error=auth_error');
     }
 
     // Handle authentication failure (no user returned)
     if (!user) {
-      console.error('[AUTH] ❌ Authentication failed. Info:', info);
+      logger.warn('[AUTH] Authentication failed.', info);
       return res.redirect(FRONTEND_URL + '/?error=auth_failed');
     }
 
     // Log the user into the session
     req.logIn(user, async (loginErr) => {
       if (loginErr) {
-        console.error('[AUTH] ❌ Session login error:', loginErr.message || loginErr);
+        logger.error('[AUTH] Session login error:', loginErr.message || loginErr);
         return res.redirect(FRONTEND_URL + '/?error=session_error');
       }
 
       // ✅ SUCCESS — check admin role BEFORE redirecting
       const email = (user.email || (user.emails && user.emails[0]?.value) || '').toLowerCase();
-      console.log('[AUTH] ✅ Login successful:', user.name || email || 'Unknown');
+      logger.info('[AUTH] Login successful:', user.name || email || 'Unknown');
 
       try {
         const isAdmin = await adminDb.checkIsAdmin(email);
         const redirectPath = isAdmin ? '/admin' : '/dashboard';
-        console.log(`[AUTH] ✅ User is ${isAdmin ? 'ADMIN' : 'USER'} → Redirecting to: ${FRONTEND_URL}${redirectPath}`);
+        logger.info(`[AUTH] User is ${isAdmin ? 'ADMIN' : 'USER'}; redirecting to ${FRONTEND_URL}${redirectPath}`);
         return res.redirect(FRONTEND_URL + redirectPath);
       } catch (adminErr) {
-        console.error('[AUTH] ⚠️ Admin check failed, defaulting to /dashboard:', adminErr.message);
+        logger.error('[AUTH] Admin check failed, defaulting to /dashboard:', adminErr.message);
         return res.redirect(FRONTEND_URL + '/dashboard');
       }
     });
@@ -287,7 +299,7 @@ app.get('/auth/callback', (req, res, next) => {
  * When landing page loads, AuthContext calls /auth/user → gets loggedIn:false → UI updates.
  */
 app.get('/auth/logout', (req, res, next) => {
-  console.log('[AUTH] Logout requested');
+  logger.info('[AUTH] Logout requested');
 
   // Clear IBM App ID tokens from session
   if (hasAppIdCredentials) {
@@ -297,21 +309,21 @@ app.get('/auth/logout', (req, res, next) => {
   // Passport v0.6+ requires callback
   req.logout(function (err) {
     if (err) {
-      console.error('[AUTH] ❌ Passport logout error:', err);
+      logger.error('[AUTH] Passport logout error:', err);
       return next(err);
     }
 
     // Destroy the entire session
     req.session.destroy((destroyErr) => {
       if (destroyErr) {
-        console.error('[AUTH] ❌ Session destroy error:', destroyErr);
+        logger.error('[AUTH] Session destroy error:', destroyErr);
       }
 
       // Clear the session cookie from browser
       res.clearCookie('connect.sid');
 
       // ✅ Redirect to frontend landing page
-      console.log('[AUTH] ✅ Logged out. Redirecting to:', FRONTEND_URL);
+      logger.info('[AUTH] Logged out. Redirecting to:', FRONTEND_URL);
       return res.redirect(FRONTEND_URL);
     });
   });
@@ -351,7 +363,7 @@ app.get('/auth/user', async (req, res) => {
   try {
     isAdmin = await adminDb.checkIsAdmin(email);
   } catch (e) {
-    console.error('[AUTH] /auth/user admin check error:', e.message);
+    logger.error('[AUTH] /auth/user admin check error:', e.message);
   }
 
   return res.json({
@@ -432,7 +444,7 @@ app.get('/api/debug/firestore', async (req, res) => {
   }
 
   try {
-    console.log('[FIRESTORE][DEBUG] route invoked', {
+    logger.debug('[FIRESTORE][DEBUG] route invoked', {
       node: process.version,
       platform: process.platform,
       cwd: process.cwd(),
@@ -444,9 +456,7 @@ app.get('/api/debug/firestore', async (req, res) => {
       doc,
     });
   } catch (err) {
-    console.error('[FIRESTORE][DEBUG] route failed');
-    console.error(err);
-    console.error(err.stack);
+    logger.error('[FIRESTORE][DEBUG] route failed', err);
     return res.status(500).json({
       success: false,
       error: 'Firestore debug write failed',
@@ -486,7 +496,7 @@ app.get('/api/user-role', async (req, res) => {
     const adminRole = isAdmin ? (await adminDb.getAdminRole(email)) : null;
     return res.json({ success: true, email, isAdmin, adminRole });
   } catch (err) {
-    console.error('[API] /api/user-role error:', err.message);
+    logger.error('[API] /api/user-role error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to check role.' });
   }
 });
@@ -510,7 +520,7 @@ app.post('/api/add-admin', async (req, res) => {
 
     // Only the super admin can add other admins
     if (!adminDb.isSuperAdmin(callerEmail)) {
-      console.warn(`[API] /api/add-admin: Non-super-admin attempt by ${callerEmail}`);
+      logger.warn(`[API] /api/add-admin: Non-super-admin attempt by ${callerEmail}`);
       return res.status(403).json({
         success: false,
         error: 'Forbidden',
@@ -527,7 +537,7 @@ app.post('/api/add-admin', async (req, res) => {
     if (result.success) adminCache.delete(`admin:${newAdminEmail.trim().toLowerCase()}`);
     return res.status(result.success ? 200 : 400).json(result);
   } catch (err) {
-    console.error('[API] /api/add-admin error:', err.message);
+    logger.error('[API] /api/add-admin error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to add admin.' });
   }
 });
@@ -566,7 +576,7 @@ app.delete('/api/remove-admin', async (req, res) => {
     if (result.success) adminCache.delete(`admin:${String(adminEmail).trim().toLowerCase()}`);
     return res.status(result.success ? 200 : 400).json(result);
   } catch (err) {
-    console.error('[API] /api/remove-admin error:', err.message);
+    logger.error('[API] /api/remove-admin error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to remove admin.' });
   }
 });
@@ -625,7 +635,7 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error('[ERROR]', err.stack || err.message || err);
+  logger.error('[ERROR]', err);
   const uploadError = err.name === 'MulterError' || /Only .* allowed|files are allowed|File too large/i.test(err.message || '');
   const status = uploadError ? 400 : (err.status || err.statusCode || 500);
   const isClientError = status >= 400 && status < 500;
@@ -670,43 +680,29 @@ function extractRoles(user) {
 // Start Server
 // ─────────────────────────────────────────────
 server.listen(PORT, () => {
-  console.log('');
-  console.log('╔══════════════════════════════════════════╗');
-  console.log('║     CloudIQ Backend API Server           ║');
-  console.log('╠══════════════════════════════════════════╣');
-  console.log(`║  Port:     ${PORT}                          ║`);
-  console.log(`║  Frontend: ${FRONTEND_URL.padEnd(27)}║`);
-  console.log('╠══════════════════════════════════════════╣');
-  console.log('║  Auth Flow:                              ║');
-  console.log('║  /auth/login → IBM App ID login          ║');
-  console.log('║  /auth/callback → session + redirect     ║');
-  console.log('║  /auth/logout → destroy + redirect       ║');
-  console.log('║  /auth/user → session check (JSON)       ║');
-  console.log('║  /debug-user → raw user object           ║');
-  console.log('╚══════════════════════════════════════════╝');
-  console.log('');
+  logger.info(`[SERVER] Running on port ${PORT}`);
+  logger.info(`[SERVER] Frontend origin ${FRONTEND_URL}`);
   if (hasAppIdCredentials) {
-    console.log('  Register this callback URL in IBM App ID:');
-    console.log(`  → ${process.env.APPID_REDIRECT_URI}`);
-    console.log('');
+    logger.info('[AUTH] IBM App ID ready');
+    logger.debug('[AUTH] App ID callback URL:', process.env.APPID_REDIRECT_URI);
   } else {
-    console.log('  IBM App ID is disabled until the required environment variables are provided.');
-    console.log('');
+    logger.warn('[AUTH] IBM App ID is disabled until the required environment variables are provided.');
   }
+  logger.info('[SOCKET] Ready');
 
   startLabCleanupService();
 });
 
 async function shutdown(signal) {
-  console.log(`[SERVER] ${signal} received. Shutting down gracefully...`);
+  logger.info(`[SERVER] ${signal} received. Shutting down gracefully...`);
   try {
     await stopLabCleanupService();
   } catch (err) {
-    console.error('[SERVER] Failed to stop lab cleanup service:', err.message);
+    logger.error('[SERVER] Failed to stop lab cleanup service:', err.message);
   }
 
   server.close(() => {
-    console.log('[SERVER] HTTP server closed.');
+    logger.info('[SERVER] HTTP server closed.');
     process.exit(0);
   });
 }
@@ -721,18 +717,14 @@ function isFirestoreGrpcEio(err) {
 }
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[PROCESS] Unhandled promise rejection');
-  console.error(reason);
-  if (reason?.stack) console.error(reason.stack);
+  logger.error('[PROCESS] Unhandled promise rejection', reason);
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('[PROCESS] Uncaught exception');
-  console.error(err);
-  if (err?.stack) console.error(err.stack);
+  logger.error('[PROCESS] Uncaught exception', err);
 
   if (isFirestoreGrpcEio(err)) {
-    console.error('[FIRESTORE][GRPC] Scoped EIO runtime error captured without terminating process');
+    logger.error('[FIRESTORE][GRPC] Scoped EIO runtime error captured without terminating process');
     return;
   }
 

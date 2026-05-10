@@ -17,6 +17,7 @@ const {
   encryptAccessToken,
   decryptAccessToken,
 } = require('../services/githubCodespacesService');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 const DB_NAME = 'lab_sessions';
@@ -120,9 +121,9 @@ function isBlockingActiveLab(lab) {
 async function releaseExpiredActiveLabs(activeLabs) {
   for (const lab of activeLabs) {
     if (isBlockingActiveLab(lab) && isExpired(lab)) {
-      console.log(`[LABS] Existing active lab ${lab._id} is expired; marking expired before creating a new one.`);
+      logger.debug(`[LABS] Existing active lab ${lab._id} is expired; marking expired before creating a new one.`);
       await markLabStatus(lab, 'expired', { expired_at: new Date().toISOString() });
-      console.log('[LABS] active lab released');
+      logger.debug('[LABS] active lab released');
     }
   }
 }
@@ -197,7 +198,7 @@ function getLabDeletionToken(req, lab) {
   try {
     return decryptAccessToken(lab.github_access_token_encrypted);
   } catch (err) {
-    console.warn(`[LABS] Could not decrypt stored GitHub token for lab ${lab._id}: ${err.message}`);
+    logger.warn(`[LABS] Could not decrypt stored GitHub token for lab ${lab._id}: ${err.message}`);
     return null;
   }
 }
@@ -209,7 +210,7 @@ async function softDeleteLabDocument(lab, status, extra = {}) {
   });
 
   if (!freshLab) {
-    console.log(`[LABS][CLOUDANT] lab document already removed: ${lab._id}`);
+    logger.debug(`[LABS][CLOUDANT] lab document already removed: ${lab._id}`);
     return {
       ...lab,
       ...extra,
@@ -247,14 +248,14 @@ async function softDeleteLabDocument(lab, status, extra = {}) {
     document: updated,
   });
 
-  console.log('[LABS][CLOUDANT] soft delete fallback used');
-  console.log('[LABS] active lab released');
+  logger.debug('[LABS][CLOUDANT] soft delete fallback used');
+  logger.debug('[LABS] active lab released');
   return updated;
 }
 
 async function removeLabDocument(lab, status = 'deleted', extra = {}) {
-  console.log('[LABS][CLOUDANT] removing lab document');
-  console.log('[LABS][CLOUDANT] deleting lab document');
+  logger.debug('[LABS][CLOUDANT] removing lab document');
+  logger.debug('[LABS][CLOUDANT] deleting lab document');
 
   let lastDeleteError = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -266,8 +267,8 @@ async function removeLabDocument(lab, status = 'deleted', extra = {}) {
         rev: freshLab._rev,
       });
 
-      console.log('[LABS][CLOUDANT] lab document removed');
-      console.log('[LABS] active lab released');
+      logger.debug('[LABS][CLOUDANT] lab document removed');
+      logger.debug('[LABS] active lab released');
       return {
         ...freshLab,
         ...extra,
@@ -283,8 +284,8 @@ async function removeLabDocument(lab, status = 'deleted', extra = {}) {
       };
     } catch (err) {
       if (err.status === 404 || err.statusCode === 404) {
-        console.log(`[LABS][CLOUDANT] lab document already removed: ${lab._id}`);
-        console.log('[LABS] active lab released');
+        logger.debug(`[LABS][CLOUDANT] lab document already removed: ${lab._id}`);
+        logger.debug('[LABS] active lab released');
         return {
           ...lab,
           ...extra,
@@ -301,7 +302,7 @@ async function removeLabDocument(lab, status = 'deleted', extra = {}) {
       }
 
       lastDeleteError = err;
-      console.warn(`[LABS][CLOUDANT] hard delete attempt ${attempt} failed for ${lab._id}: ${cloudantErrorDetails(err)}`);
+      logger.warn(`[LABS][CLOUDANT] hard delete attempt ${attempt} failed for ${lab._id}: ${cloudantErrorDetails(err)}`);
     }
   }
 
@@ -315,8 +316,8 @@ async function destroyCodespaceForLab(accessToken, lab) {
   const codespaceName = lab.codespace_name;
 
   if (!codespaceName) {
-    console.warn(`[LABS] Lab ${lab._id} has no codespace name; skipping GitHub cleanup.`);
-    console.log('[LABS] codespace already removed');
+    logger.warn(`[LABS] Lab ${lab._id} has no codespace name; skipping GitHub cleanup.`);
+    logger.debug('[LABS] codespace already removed');
     return {
       fetched: false,
       stopped: false,
@@ -330,7 +331,7 @@ async function destroyCodespaceForLab(accessToken, lab) {
     codespaceResult = await fetchCodespace(accessToken, codespaceName, { recoverable: true });
   } catch (err) {
     if (err.statusCode === 401) {
-      console.warn(`[LABS] Recoverable GitHub fetch failure for ${codespaceName}: ${err.message}`);
+      logger.warn(`[LABS] Recoverable GitHub fetch failure for ${codespaceName}: ${err.message}`);
       codespaceResult = { ok: false, recoverable: true, alreadyRemoved: false, status: 401, message: err.message };
     } else {
       throw err;
@@ -338,7 +339,7 @@ async function destroyCodespaceForLab(accessToken, lab) {
   }
 
   if (codespaceResult.alreadyRemoved) {
-    console.log('[LABS] codespace already removed');
+    logger.debug('[LABS] codespace already removed');
     return {
       fetched: false,
       stopped: false,
@@ -351,12 +352,12 @@ async function destroyCodespaceForLab(accessToken, lab) {
   const state = codespaceResult.data?.state;
   const shouldStop = codespaceResult.ok && !['Shutdown', 'ShuttingDown'].includes(state);
   if (shouldStop) {
-    console.log('[LABS] stopping codespace...');
+    logger.debug('[LABS] stopping codespace...');
     const stopResult = await stopCodespace(accessToken, codespaceName, { recoverable: true });
     if (stopResult.recoverable) {
-      console.warn(`[LABS] Recoverable GitHub stop failure for ${codespaceName}: ${stopResult.message}`);
+      logger.warn(`[LABS] Recoverable GitHub stop failure for ${codespaceName}: ${stopResult.message}`);
       if (stopResult.alreadyRemoved) {
-        console.log('[LABS] codespace already removed');
+        logger.debug('[LABS] codespace already removed');
         return {
           fetched: true,
           stopped: false,
@@ -368,14 +369,14 @@ async function destroyCodespaceForLab(accessToken, lab) {
     }
   }
 
-  console.log('[LABS] deleting codespace...');
+  logger.info('[LABS] deleting codespace...');
   const deleteResult = await deleteCodespace(accessToken, codespaceName, { recoverable: true });
   if (deleteResult.ok) {
-    console.log('[LABS] codespace deleted successfully');
+    logger.info('[LABS] codespace deleted successfully');
   } else if (deleteResult.alreadyRemoved) {
-    console.log('[LABS] codespace already removed');
+    logger.debug('[LABS] codespace already removed');
   } else if (deleteResult.recoverable) {
-    console.warn(`[LABS] Recoverable GitHub delete failure for ${codespaceName}: ${deleteResult.message}`);
+    logger.warn(`[LABS] Recoverable GitHub delete failure for ${codespaceName}: ${deleteResult.message}`);
   }
 
   return {
@@ -394,7 +395,7 @@ async function destroyLabSession(req, lab, status = 'deleted') {
   try {
     githubCleanup = await destroyCodespaceForLab(accessToken, lab);
   } catch (err) {
-    console.warn(`[LABS] GitHub cleanup failed for lab ${lab._id}; clearing Cloudant session anyway: ${err.message}`);
+    logger.warn(`[LABS] GitHub cleanup failed for lab ${lab._id}; clearing Cloudant session anyway: ${err.message}`);
     githubCleanup = { warning: err.message };
   }
 
@@ -404,7 +405,7 @@ async function destroyLabSession(req, lab, status = 'deleted') {
     github_cleanup_warning: githubCleanup?.warning || undefined,
   });
 
-  console.log('[LABS] lab fully destroyed');
+  logger.info('[LABS] lab fully destroyed');
   return updated;
 }
 
@@ -413,7 +414,7 @@ router.get('/', async (req, res) => {
   if (!userId) return apiError(res, 401, 'Unauthorized', 'No authenticated user id found.');
 
   try {
-    console.log(`[LABS] Listing labs for user ${userId}`);
+    logger.debug(`[LABS] Listing labs for user ${userId}`);
     const labs = await findLabsForUser(userId);
     const activeLab = labs.find((lab) => isBlockingActiveLab(lab)) || null;
     return apiSuccess(res, 200, {
@@ -422,7 +423,7 @@ router.get('/', async (req, res) => {
       githubConnected: Boolean(req.session?.github?.accessToken),
     });
   } catch (err) {
-    console.error('[LABS] Failed to list labs:', err.message);
+    logger.error('[LABS] Failed to list labs:', err.message);
     return apiError(res, 500, 'Failed to list labs.');
   }
 });
@@ -434,13 +435,13 @@ router.post('/create', ensureGitHubConnected, async (req, res) => {
   if (!userId) return apiError(res, 401, 'Unauthorized', 'No authenticated user id found.');
 
   try {
-    console.log('[LABS] checking active lab state');
+    logger.debug('[LABS] checking active lab state');
     const repoRef = parsePublicGitHubRepoUrl(req.body?.repoUrl);
     if (!repoRef) {
       return apiError(res, 400, 'Invalid GitHub repo URL.', 'Use a public HTTPS GitHub URL like https://github.com/owner/repo.');
     }
     const resolvedName = resolveLabName(req.body?.labName, repoRef);
-    console.log(`[LABS] custom lab name accepted: ${resolvedName.displayName}`);
+    logger.debug(`[LABS] custom lab name accepted: ${resolvedName.displayName}`);
 
     const activeLabs = await findActiveLabsForUser(userId);
     const blockingActiveLab = activeLabs.find((lab) => isBlockingActiveLab(lab) && !isExpired(lab));
@@ -455,12 +456,12 @@ router.post('/create', ensureGitHubConnected, async (req, res) => {
       return apiError(res, 403, 'Private repositories are not allowed.');
     }
 
-    console.log('[LABS] creating new lab');
+    logger.info('[LABS] creating new lab');
     const codespace = await createCodespace(githubSession.accessToken, repoRef, {
       idleTimeoutMinutes: LAB_TTL_MINUTES,
       displayName: resolvedName.displayName,
     });
-    console.log('[LABS] codespace created successfully');
+    logger.info('[LABS] codespace created successfully');
 
     const createdAt = new Date();
     const expiresAt = new Date(createdAt.getTime() + LAB_TTL_MINUTES * 60 * 1000);
@@ -483,7 +484,7 @@ router.post('/create', ensureGitHubConnected, async (req, res) => {
     };
 
     await cloudant.postDocument({ db: DB_NAME, document: lab });
-    console.log(`[LABS] Created lab ${lab._id} for ${userId}: ${lab.codespace_name}`);
+    logger.info(`[LABS] Created lab ${lab._id} for ${userId}: ${lab.codespace_name}`);
 
     return apiSuccess(res, 201, {
       data: sanitizeLab(lab),
@@ -491,7 +492,7 @@ router.post('/create', ensureGitHubConnected, async (req, res) => {
       message: 'Lab created.',
     });
   } catch (err) {
-    console.error('[LABS] Failed to create lab:', err.message);
+    logger.error('[LABS] Failed to create lab:', err.message);
     return apiError(res, err.statusCode || 500, 'Failed to create lab.', err.message);
   }
 });
@@ -518,13 +519,13 @@ router.delete('/:labId', async (req, res) => {
 
     const updated = await destroyLabSession(req, lab, 'deleted');
 
-    console.log(`[LABS] Deleted lab ${lab._id} for ${userId}.`);
+    logger.info(`[LABS] Deleted lab ${lab._id} for ${userId}.`);
     return apiSuccess(res, 200, {
       data: sanitizeLab(updated),
       message: 'Lab deleted.',
     });
   } catch (err) {
-    console.error('[LABS] Failed to delete lab:', err.message);
+    logger.error('[LABS] Failed to delete lab:', err.message);
     return apiError(res, err.statusCode || 500, 'Failed to delete lab.', err.message);
   }
 });
@@ -539,15 +540,16 @@ router.delete('/', async (req, res) => {
 
     const updated = await destroyLabSession(req, lab, 'deleted');
 
-    console.log(`[LABS] Deleted active lab ${lab._id} for ${userId}.`);
+    logger.info(`[LABS] Deleted active lab ${lab._id} for ${userId}.`);
     return apiSuccess(res, 200, {
       data: sanitizeLab(updated),
       message: 'Lab deleted.',
     });
   } catch (err) {
-    console.error('[LABS] Failed to delete active lab:', err.message);
+    logger.error('[LABS] Failed to delete active lab:', err.message);
     return apiError(res, err.statusCode || 500, 'Failed to delete lab.', err.message);
   }
 });
 
 module.exports = router;
+

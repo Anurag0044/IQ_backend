@@ -13,6 +13,7 @@ const firebaseService = require('../services/firebaseService');
 const { uploadDiscussionMedia, deleteMedia } = require('../services/cloudinaryService');
 const { ensureAuthenticated, extractUserInfo, checkAdminRole } = require('../middleware/auth');
 const { communityCache, membershipCache, adminCache } = require('../services/cacheService');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -43,10 +44,10 @@ const upload = multer({
 });
 
 function discussionUpload(req, res, next) {
-  console.log('[CLOUDINARY] upload request received');
+  logger.info('[CLOUDINARY] upload started', { route: 'discussion_media' });
   upload.single('file')(req, res, (err) => {
     if (!err) {
-      console.log('[CLOUDINARY] multer parsed successfully', {
+      logger.debug('[CLOUDINARY] multer parsed successfully', {
         hasFile: Boolean(req.file),
         size: req.file?.size || 0,
         mimeType: req.file?.mimetype || null,
@@ -128,14 +129,14 @@ async function getCommunityOr404(communityId, { bustCache = false } = {}) {
 async function isCommunityMember(userId, community) {
   if (!userId || !community) return false;
   if (Array.isArray(community.members) && community.members.includes(userId)) {
-    console.log('[FIREBASE] member validated');
+    logger.debug('[FIREBASE] member validated');
     return true;
   }
 
   const cacheKey = `mem:${userId}:${community._id}`;
   const cached = membershipCache.get(cacheKey);
   if (cached === true) {
-    console.log('[FIREBASE] member validated');
+    logger.debug('[FIREBASE] member validated');
     return true;
   }
 
@@ -149,10 +150,10 @@ async function isCommunityMember(userId, community) {
     });
     const isMember = (res.result.rows || []).length > 0;
     if (isMember) membershipCache.set(cacheKey, true);
-    if (isMember) console.log('[FIREBASE] member validated');
+    if (isMember) logger.debug('[FIREBASE] member validated');
     return isMember;
   } catch (err) {
-    console.warn('[DISCUSSIONS] Membership lookup failed:', err.message);
+    logger.warn('[DISCUSSIONS] Membership lookup failed:', err.message);
   }
 
   try {
@@ -170,11 +171,11 @@ async function isCommunityMember(userId, community) {
     const isMember = (fallback.result.docs || []).length > 0;
     if (isMember) {
       membershipCache.set(cacheKey, true);
-      console.log('[FIREBASE] member validated');
+      logger.debug('[FIREBASE] member validated');
     }
     return isMember;
   } catch (findErr) {
-    console.warn('[DISCUSSIONS] Membership fallback lookup failed:', findErr.message);
+    logger.warn('[DISCUSSIONS] Membership fallback lookup failed:', findErr.message);
     return false;
   }
 }
@@ -229,7 +230,7 @@ async function authorizeChannelAccess(req, channelId) {
   const community = await getCommunityOr404(channel.community_id || channel.communityId, { bustCache: true });
   const access = await ensureCanAccessCommunity(userId, community, isAdmin);
   if (!access.ok) return access;
-  console.log('[FIREBASE] community access granted', {
+  logger.debug('[FIREBASE] community access granted', {
     communityId: community._id,
     userId,
     channelId,
@@ -294,7 +295,7 @@ router.get('/communities/:communityId/channels', ensureAuthenticated, async (req
 
     const access = await ensureCanAccessCommunity(userId, community, isAdmin);
     if (!access.ok) return res.status(access.status).json({ success: false, error: access.error });
-    console.log('[FIREBASE] community access granted', {
+    logger.debug('[FIREBASE] community access granted', {
       communityId: community._id,
       userId,
       route: 'list_channels',
@@ -313,7 +314,7 @@ router.get('/communities/:communityId/channels', ensureAuthenticated, async (req
 
     return res.json({ success: true, channels });
   } catch (err) {
-    console.error('[DISCUSSIONS] List channels error:', err.message);
+    logger.error('[DISCUSSIONS] List channels error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to list channels' });
   }
 });
@@ -361,7 +362,7 @@ router.post('/communities/:communityId/channels', ensureAuthenticated, async (re
 
     return res.status(201).json({ success: true, channel: sanitizeChannel(storedChannel || channelDoc) });
   } catch (err) {
-    console.error('[DISCUSSIONS] Create channel error:', err.message);
+    logger.error('[DISCUSSIONS] Create channel error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to create channel' });
   }
 });
@@ -390,7 +391,7 @@ router.delete('/communities/:communityId/channels/:channelId', ensureAuthenticat
 
     return res.json({ success: true, message: 'Channel deleted' });
   } catch (err) {
-    console.error('[DISCUSSIONS] Delete channel error:', err.message);
+    logger.error('[DISCUSSIONS] Delete channel error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to delete channel' });
   }
 });
@@ -410,7 +411,7 @@ router.get('/channels/:channelId/messages', ensureAuthenticated, async (req, res
     });
     return res.json({ success: true, messages });
   } catch (err) {
-    console.error('[DISCUSSIONS] Fetch messages error:', err.message);
+    logger.error('[DISCUSSIONS] Fetch messages error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to fetch messages' });
   }
 });
@@ -448,11 +449,11 @@ router.post('/channels/:channelId/messages', ensureAuthenticated, async (req, re
       community: auth.community,
       channelId: stored.channel_id || stored.channelId,
       senderId: auth.userId,
-    }).catch((err) => console.warn('[DISCUSSIONS] Firestore unread update failed:', err.message));
+    }).catch((err) => logger.warn('[DISCUSSIONS] Firestore unread update failed:', err.message));
     const io = req.app.get('io');
     if (io) {
       io.to(`channel:${stored.channel_id || stored.channelId}`).emit('new_message', stored);
-      console.log('[FIREBASE] message broadcast complete', {
+      logger.debug('[FIREBASE] message broadcast complete', {
         communityId: stored.communityId || stored.community_id,
         channelId: stored.channelId || stored.channel_id,
         messageId: stored.id || stored._id,
@@ -461,7 +462,7 @@ router.post('/channels/:channelId/messages', ensureAuthenticated, async (req, re
 
     return res.status(201).json({ success: true, message: stored });
   } catch (err) {
-    console.error('[DISCUSSIONS] Create message error:', err.message);
+    logger.error('[DISCUSSIONS] Create message error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to send message' });
   }
 });
@@ -478,7 +479,7 @@ router.post('/channels/:channelId/media', ensureAuthenticated, discussionUpload,
         code: validation.code,
       });
     }
-    console.log('[CLOUDINARY] buffer validated', {
+    logger.debug('[CLOUDINARY] buffer validated', {
       isBuffer: Buffer.isBuffer(file.buffer),
       size: file.size,
       bufferBytes: file.buffer.length,
@@ -498,7 +499,7 @@ router.post('/channels/:channelId/media', ensureAuthenticated, discussionUpload,
     try {
       uploaded = await uploadDiscussionMedia(file, communityId, channelId);
     } catch (uploadErr) {
-      console.error('[DISCUSSIONS] Cloudinary upload failed:', {
+      logger.error('[DISCUSSIONS] Cloudinary upload failed:', {
         message: uploadErr.message,
         name: uploadErr.name,
         http_code: uploadErr.http_code,
@@ -552,7 +553,7 @@ router.post('/channels/:channelId/media', ensureAuthenticated, discussionUpload,
     let stored;
     try {
       stored = await firebaseService.storeMessage(messageDoc);
-      console.log('[CLOUDINARY] firestore message stored', {
+      logger.info('[FIRESTORE] metadata saved', {
         communityId,
         channelId,
         messageId: stored.id || stored._id,
@@ -560,16 +561,15 @@ router.post('/channels/:channelId/media', ensureAuthenticated, discussionUpload,
       });
     } catch (writeErr) {
       try { await deleteMedia(uploaded.public_id, uploaded.resource_type); } catch (cleanupErr) {
-        console.warn('[CLOUDINARY] uploaded media cleanup after Firestore failure failed:', cleanupErr.message);
+        logger.warn('[CLOUDINARY] uploaded media cleanup after Firestore failure failed:', cleanupErr.message);
       }
-      console.error('[DISCUSSIONS] Firestore metadata save failed after Cloudinary upload:', {
+      logger.error('[DISCUSSIONS] Firestore metadata save failed after Cloudinary upload:', {
         message: writeErr.message,
         name: writeErr.name,
         code: writeErr.code,
         stack: writeErr.stack,
       });
-      console.error(writeErr);
-      console.error(writeErr.stack);
+      logger.error(writeErr);
       return res.status(500).json({
         success: false,
         error: 'Media uploaded but metadata save failed',
@@ -580,17 +580,17 @@ router.post('/channels/:channelId/media', ensureAuthenticated, discussionUpload,
       community: auth.community,
       channelId: stored.channel_id || stored.channelId,
       senderId: auth.userId,
-    }).catch((err) => console.warn('[DISCUSSIONS] Firestore unread update failed:', err.message));
+    }).catch((err) => logger.warn('[DISCUSSIONS] Firestore unread update failed:', err.message));
 
     const io = req.app.get('io');
     if (io) {
       io.to(`channel:${stored.channel_id || stored.channelId}`).emit('new_message', stored);
-      console.log('[FIREBASE] message broadcast complete', {
+      logger.debug('[FIREBASE] message broadcast complete', {
         communityId: stored.communityId || stored.community_id,
         channelId: stored.channelId || stored.channel_id,
         messageId: stored.id || stored._id,
       });
-      console.log('[CLOUDINARY] media synced realtime', {
+      logger.debug('[CLOUDINARY] media synced realtime', {
         communityId: stored.communityId || stored.community_id,
         channelId: stored.channelId || stored.channel_id,
         messageId: stored.id || stored._id,
@@ -599,7 +599,7 @@ router.post('/channels/:channelId/media', ensureAuthenticated, discussionUpload,
 
     return res.status(201).json({ success: true, message: stored });
   } catch (err) {
-    console.error('[DISCUSSIONS] Upload media error:', {
+    logger.error('[DISCUSSIONS] Upload media error:', {
       message: err.message,
       name: err.name,
       stack: err.stack,
@@ -622,7 +622,7 @@ router.post('/messages/:messageId/pin', ensureAuthenticated, async (req, res) =>
     if (io) io.to(`channel:${message.channel_id || message.channelId}`).emit('message_pinned', { message_id: message._id, pinned: true, pinned_at: nowIso() });
     return res.json({ success: true });
   } catch (err) {
-    console.error('[DISCUSSIONS] Pin message error:', err.message);
+    logger.error('[DISCUSSIONS] Pin message error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to pin message' });
   }
 });
@@ -641,7 +641,7 @@ router.post('/messages/:messageId/unpin', ensureAuthenticated, async (req, res) 
     if (io) io.to(`channel:${message.channel_id || message.channelId}`).emit('message_pinned', { message_id: message._id, pinned: false, pinned_at: null });
     return res.json({ success: true });
   } catch (err) {
-    console.error('[DISCUSSIONS] Unpin message error:', err.message);
+    logger.error('[DISCUSSIONS] Unpin message error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to unpin message' });
   }
 });
@@ -682,7 +682,7 @@ router.post('/messages/:messageId/reactions', ensureAuthenticated, async (req, r
 
     return res.json({ success: true, persisted: true });
   } catch (err) {
-    console.error('[DISCUSSIONS] Reactions error:', err.message);
+    logger.error('[DISCUSSIONS] Reactions error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to update reaction' });
   }
 });
@@ -707,7 +707,7 @@ router.post('/channels/:channelId/read', ensureAuthenticated, async (req, res) =
 
     return res.json({ success: true });
   } catch (err) {
-    console.error('[DISCUSSIONS] Mark read error:', err.message);
+    logger.error('[DISCUSSIONS] Mark read error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to mark as read' });
   }
 });
@@ -726,7 +726,7 @@ router.get('/communities/:communityId/unreads', ensureAuthenticated, async (req,
     }));
     return res.json({ success: true, unreads });
   } catch (err) {
-    console.error('[DISCUSSIONS] Fetch unreads error:', err.message);
+    logger.error('[DISCUSSIONS] Fetch unreads error:', err.message);
     return res.status(500).json({ success: false, error: 'Failed to fetch unread counts' });
   }
 });

@@ -9,6 +9,7 @@
 
 const admin = require('firebase-admin');
 const { deleteMedia } = require('./cloudinaryService');
+const logger = require('../utils/logger');
 
 require('dotenv').config();
 
@@ -136,7 +137,7 @@ function normalizeMessageDocument(message, id) {
 }
 
 function createUnavailableFirebaseService() {
-  console.warn('[FIREBASE] Firebase credentials not configured. Firebase discussion storage disabled.');
+  logger.warn('[FIREBASE] Firebase credentials not configured. Firebase discussion storage disabled.');
   const unavailable = async () => {
     throw new Error('Firebase is not configured');
   };
@@ -188,14 +189,13 @@ if (hasFirebaseCredentials) {
       firestoreSettingsApplied = true;
     }
     realtimeDb = admin.database(firebaseApp);
-    console.log('[FIREBASE] backend initialized', {
+    logger.info('[FIREBASE] Connected', {
       apps: admin.apps.length,
       projectId: process.env.FIREBASE_PROJECT_ID,
       firestoreSingleton: true,
     });
   } catch (err) {
-    console.error('[FIREBASE] backend initialization failed:', err.message);
-    console.error(err.stack);
+    logger.error('[FIREBASE] backend initialization failed:', err);
     firebaseApp = null;
     firestore = null;
     realtimeDb = null;
@@ -203,7 +203,7 @@ if (hasFirebaseCredentials) {
 }
 
 function logFirestoreError(stage, err, extra = {}) {
-  console.error(`[FIRESTORE] ${stage} failed`, {
+  logger.error(`[FIRESTORE] ${stage} failed`, {
     message: err?.message,
     name: err?.name,
     code: err?.code,
@@ -211,8 +211,6 @@ function logFirestoreError(stage, err, extra = {}) {
     stack: err?.stack,
     ...extra,
   });
-  if (err) console.error(err);
-  if (err?.stack) console.error(err.stack);
 }
 
 async function createDocument(collectionName, document, docId = null) {
@@ -229,9 +227,9 @@ async function createDocument(collectionName, document, docId = null) {
   if (!payload.updatedAt) payload.updatedAt = payload.updated_at;
   if (!payload.createdAt) payload.createdAt = payload.created_at;
   try {
-    console.log('[FIRESTORE] saving document', { collectionName, docId: id });
+    logger.debug('[FIRESTORE] saving document', { collectionName, docId: id });
     await ref.set(payload, { merge: true });
-    console.log('[FIRESTORE] document saved', { collectionName, docId: id });
+    logger.debug('[FIRESTORE] document saved', { collectionName, docId: id });
   } catch (err) {
     logFirestoreError('document save', err, { collectionName, docId: id });
     throw err;
@@ -274,16 +272,16 @@ function realtimeQuery(collectionName, constraints = {}, onSnapshot, onError) {
   }
   if (constraints.limit) query = query.limit(constraints.limit);
 
-  console.log('[FIREBASE] listener active');
-  if (collectionName === 'messages') console.log('[FIREBASE] realtime sync active');
-  if (collectionName === 'channels') console.log('[FIREBASE] channel listener active');
+  logger.debug('[FIREBASE] listener active', { collectionName });
+  if (collectionName === 'messages') logger.debug('[FIREBASE] realtime sync active');
+  if (collectionName === 'channels') logger.debug('[FIREBASE] channel listener active');
   return query.onSnapshot(onSnapshot, onError);
 }
 
 async function paginatedMessages(channelId, { communityId = null, limit = 30, before = null } = {}) {
   if (!firestore || !channelId) return [];
   const safeLimit = Math.max(1, Math.min(50, Number(limit || 30)));
-  console.log('[FIREBASE] querying messages', { communityId, channelId, limit: safeLimit, before: before || null });
+  logger.debug('[FIREBASE] querying messages', { communityId, channelId, limit: safeLimit, before: before || null });
 
   const builders = [];
   if (communityId) {
@@ -309,22 +307,22 @@ async function paginatedMessages(channelId, { communityId = null, limit = 30, be
         byId.set(data._id || data.id, data);
       }
     } catch (err) {
-      console.warn('[FIREBASE] message query fallback used:', err.message);
+      logger.warn('[FIREBASE] message query fallback used:', err.message);
     }
   }
 
   const messages = Array.from(byId.values())
     .sort((a, b) => String(a.createdAt || a.created_at || '').localeCompare(String(b.createdAt || b.created_at || '')))
     .slice(-safeLimit);
-  await repairMessageMirrorFields(messages).catch((err) => console.warn('[FIREBASE] message mirror repair failed:', err.message));
-  console.log('[FIREBASE] history restored', { communityId, channelId, count: messages.length, messageIds: messages.map((message) => message._id || message.id) });
-  console.log('[FIREBASE] messages synced', { communityId, channelId, count: messages.length });
+  await repairMessageMirrorFields(messages).catch((err) => logger.warn('[FIREBASE] message mirror repair failed:', err.message));
+  logger.debug('[FIREBASE] history restored', { communityId, channelId, count: messages.length });
+  logger.debug('[FIREBASE] messages synced', { communityId, channelId, count: messages.length });
   return messages;
 }
 
 async function listChannelsByCommunity(communityId) {
   if (!firestore || !communityId) return [];
-  console.log('[FIREBASE] querying channels', {
+  logger.debug('[FIREBASE] querying channels', {
     communityId,
     filters: ['community_id == communityId', 'communityId == communityId'],
   });
@@ -339,8 +337,8 @@ async function listChannelsByCommunity(communityId) {
       .where('communityId', '==', communityId)
       .get(),
   ]);
-  console.log('[FIREBASE] channel loaded');
-  console.log('[FIREBASE] channel listener active');
+  logger.debug('[FIREBASE] channel loaded');
+  logger.debug('[FIREBASE] channel listener active');
 
   const byId = new Map();
   for (const snapshot of [snakeSnapshot, camelSnapshot]) {
@@ -358,10 +356,10 @@ async function listChannelsByCommunity(communityId) {
     });
 
   await repairChannelMirrorFields(channels).catch((err) =>
-    console.warn('[FIREBASE] channel mirror repair failed:', err.message)
+    logger.warn('[FIREBASE] channel mirror repair failed:', err.message)
   );
 
-  console.log('[FIREBASE] channel query result', {
+  logger.debug('[FIREBASE] channel query result', {
     communityId,
     count: channels.length,
     channelIds: channels.map((channel) => channel._id || channel.id),
@@ -372,14 +370,14 @@ async function listChannelsByCommunity(communityId) {
 async function syncChannel(channel) {
   if (!firestore || !channel?._id) return;
   const payload = normalizeChannelDocument(channel, channel._id);
-  console.log('[FIREBASE] creating channel', {
+  logger.info('[DISCUSSIONS] Channel creation started', {
     communityId: payload.communityId,
     channelId: payload.id,
     name: payload.name,
     createdBy: payload.createdBy,
   });
   await createDocument('channels', payload, payload._id);
-  console.log('[FIREBASE] channel created');
+  logger.info('[DISCUSSIONS] Channel created', { channelId: payload.id, communityId: payload.communityId });
   return payload;
 }
 
@@ -414,7 +412,7 @@ async function syncChannelBatch(channels) {
     batch.set(ref, normalizeChannelDocument(channel, channel._id), { merge: true });
   }
   await batch.commit();
-  console.log('[FIREBASE] channel loaded');
+  logger.debug('[FIREBASE] channel loaded');
 }
 
 async function deleteChannel(channelId) {
@@ -429,7 +427,7 @@ async function deleteChannel(channelId) {
   await deleteQueryInBatches(firestore.collection('unread_states').where('channel_id', '==', channelId));
   await deleteQueryInBatches(firestore.collection('unread_states').where('channelId', '==', channelId));
   await firestore.collection('channels').doc(channelId).delete();
-  console.log('[FIREBASE] channel cleanup complete', { channelId });
+  logger.info('[FIREBASE] channel cleanup complete', { channelId });
 }
 
 async function cleanupDiscussionMediaForChannel(channelId) {
@@ -452,11 +450,11 @@ async function cleanupDiscussionMediaForChannel(channelId) {
 
   await Promise.all(Array.from(mediaByPublicId.entries()).map(([publicId, resourceType]) =>
     deleteMedia(publicId, resourceType).catch((err) => {
-      console.warn('[CLOUDINARY] cleanup failed:', err.message);
+      logger.warn('[CLOUDINARY] cleanup failed:', err.message);
     })
   ));
 
-  console.log('[CLOUDINARY] cleanup complete', { channelId, files: mediaByPublicId.size });
+  logger.info('[CLOUDINARY] cleanup complete', { channelId, files: mediaByPublicId.size });
 }
 
 async function deleteQueryInBatches(query, batchSize = 400) {
@@ -472,7 +470,7 @@ async function deleteQueryInBatches(query, batchSize = 400) {
 
 async function getChannelFromFirebase(channelId) {
   const channel = await getDocument('channels', channelId);
-  if (channel) console.log('[FIREBASE] channel loaded');
+  if (channel) logger.debug('[FIREBASE] channel loaded');
   return channel;
 }
 
@@ -481,14 +479,14 @@ async function storeMessage(message) {
   if (!payload.communityId || !payload.channelId || !payload.senderId || (payload.type === 'text' && !payload.text)) {
     throw new Error('Invalid Firestore message payload');
   }
-  console.log('[FIREBASE] storing message', {
+  logger.debug('[FIREBASE] storing message', {
     communityId: payload.communityId,
     channelId: payload.channelId,
     senderId: payload.senderId,
     messageId: payload.id,
   });
   try {
-    console.log('[FIRESTORE] saving metadata', {
+    logger.debug('[FIRESTORE] saving metadata', {
       collectionName: 'messages',
       messageId: payload.id,
       channelId: payload.channelId,
@@ -496,12 +494,12 @@ async function storeMessage(message) {
       hasMedia: Boolean(payload.mediaUrl || payload.media_url),
     });
     const stored = await createDocument('messages', payload, payload._id);
-    console.log('[FIRESTORE] metadata saved', {
+    logger.info('[FIRESTORE] metadata saved', {
       messageId: stored.id || stored._id,
       channelId: stored.channelId || stored.channel_id,
       communityId: stored.communityId || stored.community_id,
     });
-    console.log('[FIREBASE] message stored');
+    logger.debug('[FIREBASE] message stored');
     return stored;
   } catch (err) {
     logFirestoreError('message metadata save', err, {
@@ -528,9 +526,9 @@ async function debugFirestoreWrite() {
   };
 
   try {
-    console.log('[FIRESTORE][DEBUG] writing test document');
+    logger.debug('[FIRESTORE][DEBUG] writing test document');
     const ref = await firestore.collection('test').add(payload);
-    console.log('[FIRESTORE][DEBUG] test document written', { id: ref.id });
+    logger.debug('[FIRESTORE][DEBUG] test document written', { id: ref.id });
     return { id: ref.id, ...payload };
   } catch (err) {
     logFirestoreError('debug write', err, { collectionName: 'test' });
@@ -578,7 +576,7 @@ async function updatePresence({ userId, communityId = null, status = 'online', s
     last_seen_at: new Date().toISOString(),
     lastSeenAt: new Date().toISOString(),
   }, userId);
-  console.log('[FIREBASE] presence updated');
+  logger.debug('[FIREBASE] presence updated');
 }
 
 async function setTyping({ channelId, userId, isTyping }) {
@@ -715,3 +713,4 @@ module.exports = hasFirebaseCredentials && firestore
       app: firebaseApp,
     }
   : createUnavailableFirebaseService();
+

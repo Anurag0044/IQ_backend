@@ -19,6 +19,7 @@ const { resolveSenderInfo, createNotification } = require('../services/notificat
 const { ensureAuthenticated, extractUserInfo, checkAdminRole } = require('../middleware/auth');
 const { communityCache, membershipCache, adminCache, TTLCache } = require('../services/cacheService');
 const firebaseService = require('../services/firebaseService');
+const logger = require('../utils/logger');
 
 async function getCachedAdminStatus(user) {
   const { email } = extractUserInfo(user);
@@ -272,7 +273,7 @@ router.get('/', async (req, res) => {
       const cacheKey = `communities:${limit}:${before || 'latest'}`;
       const cached = communityListCache.get(cacheKey);
       if (cached) {
-        console.log('[API] duplicate request prevented /api/communities');
+        logger.debug('[API] duplicate request prevented /api/communities');
         return res.json(cached);
       }
 
@@ -334,7 +335,7 @@ router.get('/', async (req, res) => {
     });
 
     if (mine) {
-      console.log('[COMMUNITIES]', {
+      logger.debug('[COMMUNITIES]', {
         userId: currentUserId || null,
         communityCount: sanitizedDocs.length,
       });

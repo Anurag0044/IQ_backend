@@ -8,6 +8,7 @@ const { v4: uuidv4 } = require('uuid');
 const { extractUserInfo, checkAdminRoleSync } = require('../middleware/auth');
 const { communityCache, membershipCache } = require('../services/cacheService');
 const firebaseService = require('../services/firebaseService');
+const logger = require('../utils/logger');
 
 const DB_COMMUNITIES = 'communities';
 const DB_MEMBERSHIPS = 'community_memberships';
@@ -42,14 +43,14 @@ async function getCachedCommunity(cloudant, communityId) {
 async function isCommunityMember(cloudant, userId, community) {
   if (!userId || !community) return false;
   if (Array.isArray(community.members) && community.members.includes(userId)) {
-    console.log('[FIREBASE] member validated');
+    logger.debug('[FIREBASE] member validated');
     return true;
   }
 
   const cacheKey = `mem:${userId}:${community._id}`;
   const cached = membershipCache.get(cacheKey);
   if (cached === true) {
-    console.log('[FIREBASE] member validated');
+    logger.debug('[FIREBASE] member validated');
     return true;
   }
 
@@ -63,10 +64,10 @@ async function isCommunityMember(cloudant, userId, community) {
     });
     const isMember = (res.result.rows || []).length > 0;
     membershipCache.set(cacheKey, isMember);
-    if (isMember) console.log('[FIREBASE] member validated');
+    if (isMember) logger.debug('[FIREBASE] member validated');
     return isMember;
   } catch (err) {
-    console.warn('[SOCKET][DISCUSSIONS] Membership lookup failed:', err.message);
+    logger.warn('[SOCKET][DISCUSSIONS] Membership lookup failed:', err.message);
   }
 
   try {
@@ -84,11 +85,11 @@ async function isCommunityMember(cloudant, userId, community) {
     const isMember = (fallback.result.docs || []).length > 0;
     if (isMember) {
       membershipCache.set(cacheKey, true);
-      console.log('[FIREBASE] member validated');
+      logger.debug('[FIREBASE] member validated');
     }
     return isMember;
   } catch (findErr) {
-    console.warn('[SOCKET][DISCUSSIONS] Membership fallback lookup failed:', findErr.message);
+    logger.warn('[SOCKET][DISCUSSIONS] Membership fallback lookup failed:', findErr.message);
     return false;
   }
 }
@@ -151,7 +152,7 @@ async function authorizeChannel({ cloudant, socket, channelId }) {
     return { ok: false, code: 'channel_forbidden', message: 'Not authorized to access this channel', extra: { channel_id: channelId } };
   }
 
-  console.log('[FIREBASE] community access granted', {
+  logger.debug('[FIREBASE] community access granted', {
     communityId: community._id,
     userId,
     channelId,
@@ -189,7 +190,7 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
       await firebaseService.updatePresence({ userId, communityId: community_id, status: 'online', socketId: socket.id });
       io.to(`community:${community_id}`).emit('join_leave_updates', { type: 'join', community_id, user_id: userId, at: nowIso() });
     } catch (err) {
-      console.warn('[SOCKET][DISCUSSIONS] join_community_discussions failed:', err.message);
+      logger.warn('[SOCKET][DISCUSSIONS] join_community_discussions failed:', err.message);
     }
   });
 
@@ -221,7 +222,7 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
         at: nowIso(),
       });
     } catch (err) {
-      console.warn('[SOCKET][DISCUSSIONS] join_channel failed:', err.message);
+      logger.warn('[SOCKET][DISCUSSIONS] join_channel failed:', err.message);
     }
   });
 
@@ -284,16 +285,16 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
         community: auth.community,
         channelId: stored.channel_id || stored.channelId,
         senderId: auth.userId,
-      }).catch((err) => console.warn('[SOCKET][DISCUSSIONS] Firestore unread update failed:', err.message));
+      }).catch((err) => logger.warn('[SOCKET][DISCUSSIONS] Firestore unread update failed:', err.message));
       io.to(`channel:${stored.channel_id || stored.channelId}`).emit('new_message', { ...stored, client_temp_id: client_temp_id || null });
       io.to(`community:${stored.community_id || stored.communityId}`).emit('unread_count_updates', { channel_id: stored.channel_id || stored.channelId, at: nowIso() });
-      console.log('[FIREBASE] message broadcast complete', {
+      logger.debug('[FIREBASE] message broadcast complete', {
         communityId: stored.communityId || stored.community_id,
         channelId: stored.channelId || stored.channel_id,
         messageId: stored.id || stored._id,
       });
     } catch (err) {
-      console.warn('[SOCKET][DISCUSSIONS] new_message failed:', err.message);
+      logger.warn('[SOCKET][DISCUSSIONS] new_message failed:', err.message);
     }
   });
 
@@ -328,7 +329,7 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
         created_at: nowIso(),
       });
     } catch (err) {
-      console.warn('[SOCKET][DISCUSSIONS] message_reaction failed:', err.message);
+      logger.warn('[SOCKET][DISCUSSIONS] message_reaction failed:', err.message);
     }
   });
 

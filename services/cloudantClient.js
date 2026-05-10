@@ -6,6 +6,7 @@
 
 const { CloudantV1 } = require('@ibm-cloud/cloudant');
 const { IamAuthenticator } = require('ibm-cloud-sdk-core');
+const logger = require('../utils/logger');
 
 require('dotenv').config();
 
@@ -49,11 +50,11 @@ const cloudant = hasCloudantCredentials
       authenticator: authenticator,
     });
     client.setServiceUrl(process.env.CLOUDANT_URL);
-    console.log('[LABS][CLOUDANT] Cloudant client initialized');
+    logger.info('[CLOUDANT] Client initialized');
     return client;
   })()
   : (() => {
-    console.warn('[LABS][CLOUDANT] Cloudant client not initialized; credentials missing');
+    logger.warn('[CLOUDANT] Client not initialized; credentials missing');
     return createUnavailableCloudantClient();
   })();
 
@@ -75,13 +76,13 @@ function wrapCloudantMethod(methodName) {
     const target = params.view ? `${params.ddoc || 'ddoc'}/${params.view}` : (params.docId || '');
     const shouldLogQuery = ['postView', 'postFind', 'postAllDocs'].includes(methodName);
     if (shouldLogQuery) {
-      console.log(`[CLOUDANT] query start ${methodName} db=${db}${target ? ` target=${target}` : ''}`);
+      logger.debug(`[CLOUDANT] query start ${methodName} db=${db}${target ? ` target=${target}` : ''}`);
     }
 
     try {
       const result = await original(params);
       if (['postView', 'postFind'].includes(methodName)) {
-        console.log(`[CLOUDANT] query optimized ${methodName} db=${db}`);
+        logger.debug(`[CLOUDANT] query optimized ${methodName} db=${db}`);
       }
       return result;
     } catch (err) {
@@ -89,9 +90,16 @@ function wrapCloudantMethod(methodName) {
 
       const retryAfterHeader = err?.headers?.['retry-after'] || err?.response?.headers?.['retry-after'];
       const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : 350;
-      console.warn(`[CLOUDANT] retry after rate limit ${methodName} db=${db} delay=${retryAfterMs}ms`);
+      logger.debug(`[CLOUDANT] retry after rate limit ${methodName} db=${db} delay=${retryAfterMs}ms`);
       await delay(Number.isFinite(retryAfterMs) ? retryAfterMs : 350);
-      return original(params);
+      try {
+        return await original(params);
+      } catch (retryErr) {
+        if (isRateLimitError(retryErr)) {
+          logger.warn(`[CLOUDANT] severe rate limit ${methodName} db=${db}`);
+        }
+        throw retryErr;
+      }
     }
   };
 }
@@ -135,17 +143,17 @@ const DATABASES = [
 async function ensureDatabase(dbName) {
   try {
     await cloudant.getDatabaseInformation({ db: dbName });
-    console.log(`  ✔ ${dbName}`);
+    logger.debug(`[CLOUDANT] Database ready: ${dbName}`);
   } catch (err) {
     if (err.status === 404) {
       try {
         await cloudant.putDatabase({ db: dbName });
-        console.log(`  ✚ ${dbName} (created)`);
+        logger.info(`[CLOUDANT] Database created: ${dbName}`);
       } catch (createErr) {
-        console.error(`  ✖ Failed to create ${dbName}:`, createErr.message);
+        logger.error(`[CLOUDANT] Failed to create ${dbName}:`, createErr.message);
       }
     } else {
-      console.error(`  ✖ Error checking ${dbName}:`, err.message);
+      logger.error(`[CLOUDANT] Error checking ${dbName}:`, err.message);
     }
   }
 }
@@ -342,11 +350,11 @@ async function createDesignDocs() {
       if (err.status === 404) {
         try {
           await cloudant.postDocument({ db: dd.db, document: dd.doc });
-          console.log(`  ⚡ Created index: ${dd.db}/${dd.docId}`);
+          logger.info(`[CLOUDANT] Created index: ${dd.db}/${dd.docId}`);
         } catch (createErr) {
           // Ignore conflicts (409) — another instance may have created it
           if (createErr.status !== 409) {
-            console.error(`  ✖ Failed to create index ${dd.db}/${dd.docId}:`, createErr.message);
+            logger.error(`[CLOUDANT] Failed to create index ${dd.db}/${dd.docId}:`, createErr.message);
           }
         }
       }
@@ -359,21 +367,22 @@ async function createDesignDocs() {
  */
 async function initAllDatabases() {
   if (!hasCloudantCredentials) {
-    console.warn('[CLOUDANT] Skipping startup initialization because Cloudant credentials are missing.');
+    logger.warn('[CLOUDANT] Skipping startup initialization because Cloudant credentials are missing.');
     return;
   }
 
-  console.log('[CLOUDANT] Initializing databases...');
+  logger.debug('[CLOUDANT] Initializing databases...');
   for (const db of DATABASES) {
     await ensureDatabase(db);
   }
-  console.log('[CLOUDANT] Creating design documents...');
+  logger.debug('[CLOUDANT] Creating design documents...');
   await createDesignDocs();
-  console.log('[CLOUDANT] ✅ All databases ready.');
+  logger.info('[CLOUDANT] Connected');
 }
 
 initAllDatabases().catch((err) => {
-  console.error('[CLOUDANT] Startup initialization failed:', err.message);
+  logger.error('[CLOUDANT] Startup initialization failed:', err.message);
 });
 
 module.exports = cloudant;
+

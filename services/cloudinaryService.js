@@ -6,6 +6,7 @@
 require('dotenv').config();
 
 const cloudinary = require('cloudinary').v2;
+const logger = require('../utils/logger');
 
 const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET } = process.env;
 
@@ -27,13 +28,13 @@ cloudinary.config({
 });
 
 if (isCloudinaryConfigured()) {
-  console.log('[CLOUDINARY] initialized successfully', {
+  logger.info('[CLOUDINARY] Connected', {
     cloudName: CLOUDINARY_CLOUD_NAME,
     apiKeyConfigured: true,
     apiSecretConfigured: true,
   });
 } else {
-  console.error('[CLOUDINARY] missing environment variables', {
+  logger.error('[CLOUDINARY] missing environment variables', {
     cloudNameConfigured: Boolean(CLOUDINARY_CLOUD_NAME),
     apiKeyConfigured: Boolean(CLOUDINARY_API_KEY),
     apiSecretConfigured: Boolean(CLOUDINARY_API_SECRET),
@@ -72,13 +73,13 @@ function uploadToCloudinary(buffer, folder, resourceType = 'auto', options = {})
   }
 
   const fileName = options.fileName ? sanitizeOriginalFilename(options.fileName) : null;
-  console.log('[CLOUDINARY] buffer type valid', {
+  logger.debug('[CLOUDINARY] buffer type valid', {
     isBuffer: Buffer.isBuffer(buffer),
     bytes: buffer.length,
     mimeType: options.mimeType || null,
     fileName,
   });
-  console.log('[CLOUDINARY] upload stream starting', {
+  logger.info('[CLOUDINARY] upload started', {
     folder,
     resourceType,
     bytes: buffer.length,
@@ -93,7 +94,7 @@ function uploadToCloudinary(buffer, folder, resourceType = 'auto', options = {})
       settled = true;
 
       if (error) {
-        console.error('[CLOUDINARY] upload failed', {
+        logger.error('[CLOUDINARY] upload failed', {
           message: error.message,
           name: error.name,
           http_code: error.http_code,
@@ -103,12 +104,12 @@ function uploadToCloudinary(buffer, folder, resourceType = 'auto', options = {})
         return;
       }
 
-      console.log('[CLOUDINARY] upload completed', {
+      logger.info('[CLOUDINARY] upload completed', {
         publicId: result?.public_id,
         resourceType: result?.resource_type,
         bytes: result?.bytes,
       });
-      console.log('[CLOUDINARY] secure URL generated', {
+      logger.debug('[CLOUDINARY] secure URL generated', {
         publicId: result?.public_id,
         secureUrl: Boolean(result?.secure_url),
       });
@@ -166,7 +167,7 @@ async function uploadDiscussionMedia(file, communityId, channelId) {
   const fileName = sanitizeOriginalFilename(file.originalname);
   const expectedResourceType = getDiscussionResourceType(file.mimetype);
 
-  console.log('[CLOUDINARY] upload stream started', {
+  logger.debug('[CLOUDINARY] upload stream started', {
     communityId,
     channelId,
     folder,
@@ -201,7 +202,7 @@ async function deleteImage(publicId) {
   try {
     await cloudinary.uploader.destroy(publicId);
   } catch (error) {
-    console.error('[Cloudinary] Failed to delete image:', publicId, error.message);
+    logger.error('[CLOUDINARY] Failed to delete image:', publicId, error.message);
   }
 }
 
@@ -210,7 +211,7 @@ async function deleteMedia(publicId, resourceType = 'image') {
   try {
     await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
   } catch (error) {
-    console.error('[Cloudinary] Failed to delete media:', publicId, error.message);
+    logger.error('[CLOUDINARY] Failed to delete media:', publicId, error.message);
   }
 }
 

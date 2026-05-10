@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const cloudant = require('../services/cloudantClient');
 const { ensureAuthenticated, extractUserInfo } = require('../middleware/auth');
 const { TTLCache } = require('../services/cacheService');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 const DB = 'friendships';
@@ -33,7 +34,7 @@ router.get('/discover', ensureAuthenticated, async (req, res) => {
     const cacheKey = `discover:${userId}:${limit}`;
     const cached = friendsCache.get(cacheKey);
     if (cached) {
-      console.log('[API] duplicate request prevented /api/friends/discover');
+      logger.debug('[API] duplicate request prevented /api/friends/discover');
       return res.json(cached);
     }
 
@@ -319,7 +320,7 @@ router.get('/', ensureAuthenticated, async (req, res) => {
     const cacheKey = `friends:${userId}:list`;
     const cached = friendsCache.get(cacheKey);
     if (cached) {
-      console.log('[API] duplicate request prevented /api/friends');
+      logger.debug('[API] duplicate request prevented /api/friends');
       return res.json(cached);
     }
 

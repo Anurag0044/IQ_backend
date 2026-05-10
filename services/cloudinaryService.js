@@ -122,6 +122,11 @@ function uploadToCloudinary(buffer, folder, resourceType = 'auto', options = {})
         resource_type: resourceType,
       };
 
+      if (options.quality) uploadOptions.quality = options.quality;
+      if (options.transformation) uploadOptions.transformation = options.transformation;
+      if (options.eager) uploadOptions.eager = options.eager;
+      if (typeof options.eagerAsync === 'boolean') uploadOptions.eager_async = options.eagerAsync;
+      if (options.streamingProfile) uploadOptions.streaming_profile = options.streamingProfile;
       if (fileName) {
         uploadOptions.use_filename = true;
         uploadOptions.unique_filename = true;
@@ -140,17 +145,45 @@ function uploadToCloudinary(buffer, folder, resourceType = 'auto', options = {})
 
 async function uploadBuffer(buffer, folder = 'tutorials', publicId = undefined) {
   const result = await uploadToCloudinary(buffer, folder, 'image', { fileName: publicId || null });
-  return { secure_url: result.secure_url, public_id: result.public_id };
+  return {
+    secure_url: result.secure_url,
+    public_id: result.public_id,
+    resource_type: result.resource_type || 'image',
+    bytes: result.bytes || buffer.length,
+    format: result.format || null,
+  };
 }
 
-async function uploadVideoBuffer(buffer, folder = 'videos', publicId = undefined) {
-  const result = await uploadToCloudinary(buffer, folder, 'video', { fileName: publicId || null });
-  return { secure_url: result.secure_url, public_id: result.public_id };
+async function uploadVideoBuffer(buffer, folder = 'videos', publicId = undefined, options = {}) {
+  const result = await uploadToCloudinary(buffer, folder, 'video', {
+    fileName: publicId || null,
+    ...options,
+  });
+  const optimizedUrl = cloudinary.url(result.public_id, {
+    resource_type: 'video',
+    secure: true,
+    quality: 'auto',
+    fetch_format: 'auto',
+  });
+  return {
+    secure_url: optimizedUrl || result.secure_url,
+    original_secure_url: result.secure_url,
+    public_id: result.public_id,
+    resource_type: result.resource_type || 'video',
+    bytes: result.bytes || buffer.length,
+    format: result.format || null,
+  };
 }
 
 async function uploadRawBuffer(buffer, folder = 'attachments', publicId = undefined, filename = undefined) {
   const result = await uploadToCloudinary(buffer, folder, 'raw', { fileName: filename || publicId || null });
-  return { secure_url: result.secure_url, public_id: result.public_id };
+  return {
+    secure_url: result.secure_url,
+    public_id: result.public_id,
+    resource_type: result.resource_type || 'raw',
+    bytes: result.bytes || buffer.length,
+    format: result.format || null,
+  };
 }
 
 async function uploadDiscussionMedia(file, communityId, channelId) {

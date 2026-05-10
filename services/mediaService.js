@@ -72,8 +72,8 @@ async function uploadImage({ buffer, folder, ownerId, contextType, contextId, mi
   return uploaded;
 }
 
-async function uploadVideo({ buffer, folder, ownerId, contextType, contextId, mimeType, sizeBytes }) {
-  const uploaded = await uploadVideoBuffer(buffer, folder);
+async function uploadVideo({ buffer, folder, ownerId, contextType, contextId, mimeType, sizeBytes, cloudinaryOptions }) {
+  const uploaded = await uploadVideoBuffer(buffer, folder, undefined, cloudinaryOptions || {});
   await recordUploadMetadata({
     ownerId,
     contextType,

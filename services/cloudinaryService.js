@@ -1,173 +1,224 @@
 // ============================================
 // CloudIQ Backend - Cloudinary Service
 // ============================================
-// Handles image uploads to Cloudinary.
-// Images are stored in the 'tutorials' folder by default.
+// Handles Cloudinary uploads from in-memory buffers only.
 
-// Ensure env vars are loaded even if this module is required before server.js
 require('dotenv').config();
 
 const cloudinary = require('cloudinary').v2;
 
-// ── Startup validation ───────────────────────
-// Fail fast with a clear message instead of Cloudinary's cryptic "Must supply api_key"
 const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET } = process.env;
 
-if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
-  console.error(
-    '[Cloudinary] ❌ Missing environment variables!\n' +
-    `  CLOUDINARY_CLOUD_NAME : ${CLOUDINARY_CLOUD_NAME  || '⚠️  NOT SET'}\n` +
-    `  CLOUDINARY_API_KEY    : ${CLOUDINARY_API_KEY     ? '✅ set' : '⚠️  NOT SET'}\n` +
-    `  CLOUDINARY_API_SECRET : ${CLOUDINARY_API_SECRET  ? '✅ set' : '⚠️  NOT SET'}\n` +
-    '  → Add these to your backend/.env and RESTART the server.'
+function isCloudinaryConfigured() {
+  return Boolean(CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET);
+}
+
+function cloudinaryUnavailableError() {
+  return new Error(
+    'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, ' +
+    'CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in backend/.env, then restart the server.'
   );
 }
 
-// Configure Cloudinary from env vars
 cloudinary.config({
-  cloud_name: CLOUDINARY_CLOUD_NAME,
-  api_key:    CLOUDINARY_API_KEY,
-  api_secret: CLOUDINARY_API_SECRET,
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-console.log('[Cloudinary] ✅ Configured for cloud:', CLOUDINARY_CLOUD_NAME || 'UNKNOWN');
-
-/**
- * Upload a file buffer to Cloudinary.
- * @param {Buffer} buffer - The image file buffer from multer memoryStorage
- * @param {string} folder - Cloudinary folder name (e.g. 'tutorials')
- * @param {string} [publicId] - Optional custom public ID
- * @returns {Promise<{ secure_url: string, public_id: string }>}
- */
-function uploadBuffer(buffer, folder = 'tutorials', publicId = undefined) {
-  // Guard: reject immediately if Cloudinary isn't configured
-  if (!CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
-    return Promise.reject(
-      new Error(
-        'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, ' +
-        'CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in backend/.env, ' +
-        'then restart the server.'
-      )
-    );
-  }
-
-  return new Promise((resolve, reject) => {
-    const opts = {
-      folder,
-      resource_type: 'image',
-      allowed_formats: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-    };
-    if (publicId) opts.public_id = publicId;
-
-    const stream = cloudinary.uploader.upload_stream(opts, (err, result) => {
-      if (err) return reject(err);
-      resolve({ secure_url: result.secure_url, public_id: result.public_id });
-    });
-
-    stream.end(buffer);
+if (isCloudinaryConfigured()) {
+  console.log('[CLOUDINARY] initialized successfully', {
+    cloudName: CLOUDINARY_CLOUD_NAME,
+    apiKeyConfigured: true,
+    apiSecretConfigured: true,
+  });
+} else {
+  console.error('[CLOUDINARY] missing environment variables', {
+    cloudNameConfigured: Boolean(CLOUDINARY_CLOUD_NAME),
+    apiKeyConfigured: Boolean(CLOUDINARY_API_KEY),
+    apiSecretConfigured: Boolean(CLOUDINARY_API_SECRET),
   });
 }
 
-/**
- * Upload a video buffer to Cloudinary.
- * @param {Buffer} buffer
- * @param {string} folder
- * @param {string} [publicId]
- * @returns {Promise<{ secure_url: string, public_id: string }>}
- */
-function uploadVideoBuffer(buffer, folder = 'videos', publicId = undefined) {
-  if (!CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
-    return Promise.reject(
-      new Error(
-        'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, ' +
-        'CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in backend/.env, ' +
-        'then restart the server.'
-      )
-    );
+function sanitizeFolderSegment(value) {
+  return String(value || 'unknown')
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 100) || 'unknown';
+}
+
+function sanitizeOriginalFilename(value) {
+  return String(value || 'file')
+    .replace(/\\/g, '/')
+    .split('/')
+    .pop()
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 120) || 'file';
+}
+
+function getDiscussionResourceType(mimeType) {
+  if (String(mimeType || '').startsWith('image/')) return 'image';
+  if (String(mimeType || '').startsWith('video/')) return 'video';
+  return 'raw';
+}
+
+function uploadToCloudinary(buffer, folder, resourceType = 'auto', options = {}) {
+  if (!isCloudinaryConfigured()) {
+    return Promise.reject(cloudinaryUnavailableError());
+  }
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    return Promise.reject(new Error('Invalid Cloudinary upload buffer'));
   }
 
+  const fileName = options.fileName ? sanitizeOriginalFilename(options.fileName) : null;
+  console.log('[CLOUDINARY] buffer type valid', {
+    isBuffer: Buffer.isBuffer(buffer),
+    bytes: buffer.length,
+    mimeType: options.mimeType || null,
+    fileName,
+  });
+  console.log('[CLOUDINARY] upload stream starting', {
+    folder,
+    resourceType,
+    bytes: buffer.length,
+    mimeType: options.mimeType || null,
+    fileName,
+  });
+
   return new Promise((resolve, reject) => {
-    const opts = {
-      folder,
-      resource_type: 'video',
-      allowed_formats: ['mp4', 'webm', 'mov', 'm4v'],
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+
+      if (error) {
+        console.error('[CLOUDINARY] upload failed', {
+          message: error.message,
+          name: error.name,
+          http_code: error.http_code,
+          stack: error.stack,
+        });
+        reject(error);
+        return;
+      }
+
+      console.log('[CLOUDINARY] upload completed', {
+        publicId: result?.public_id,
+        resourceType: result?.resource_type,
+        bytes: result?.bytes,
+      });
+      console.log('[CLOUDINARY] secure URL generated', {
+        publicId: result?.public_id,
+        secureUrl: Boolean(result?.secure_url),
+      });
+      resolve(result);
     };
-    if (publicId) opts.public_id = publicId;
 
-    const stream = cloudinary.uploader.upload_stream(opts, (err, result) => {
-      if (err) return reject(err);
-      resolve({ secure_url: result.secure_url, public_id: result.public_id });
-    });
+    try {
+      const uploadOptions = {
+        folder,
+        resource_type: resourceType,
+      };
 
-    stream.end(buffer);
+      if (fileName) {
+        uploadOptions.use_filename = true;
+        uploadOptions.unique_filename = true;
+        uploadOptions.filename_override = fileName;
+      }
+      if (options.context) uploadOptions.context = options.context;
+
+      const stream = cloudinary.uploader.upload_stream(uploadOptions, finish);
+      stream.on('error', (error) => finish(error));
+      stream.end(buffer);
+    } catch (error) {
+      finish(error);
+    }
   });
 }
 
-/**
- * Upload a raw (attachment) buffer to Cloudinary.
- * @param {Buffer} buffer
- * @param {string} folder
- * @param {string} [publicId]
- * @param {string} [filename]
- * @returns {Promise<{ secure_url: string, public_id: string }>}
- */
-function uploadRawBuffer(buffer, folder = 'attachments', publicId = undefined, filename = undefined) {
-  if (!CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
-    return Promise.reject(
-      new Error(
-        'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, ' +
-        'CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in backend/.env, ' +
-        'then restart the server.'
-      )
-    );
-  }
-
-  return new Promise((resolve, reject) => {
-    const opts = {
-      folder,
-      resource_type: 'raw',
-      use_filename: Boolean(filename),
-      unique_filename: true,
-    };
-    if (publicId) opts.public_id = publicId;
-    if (filename) opts.filename_override = filename;
-
-    const stream = cloudinary.uploader.upload_stream(opts, (err, result) => {
-      if (err) return reject(err);
-      resolve({ secure_url: result.secure_url, public_id: result.public_id });
-    });
-
-    stream.end(buffer);
-  });
+async function uploadBuffer(buffer, folder = 'tutorials', publicId = undefined) {
+  const result = await uploadToCloudinary(buffer, folder, 'image', { fileName: publicId || null });
+  return { secure_url: result.secure_url, public_id: result.public_id };
 }
 
-/**
- * Delete an image from Cloudinary by its public_id.
- * @param {string} publicId
- * @returns {Promise<void>}
- */
+async function uploadVideoBuffer(buffer, folder = 'videos', publicId = undefined) {
+  const result = await uploadToCloudinary(buffer, folder, 'video', { fileName: publicId || null });
+  return { secure_url: result.secure_url, public_id: result.public_id };
+}
+
+async function uploadRawBuffer(buffer, folder = 'attachments', publicId = undefined, filename = undefined) {
+  const result = await uploadToCloudinary(buffer, folder, 'raw', { fileName: filename || publicId || null });
+  return { secure_url: result.secure_url, public_id: result.public_id };
+}
+
+async function uploadDiscussionMedia(file, communityId, channelId) {
+  if (!communityId || !channelId || !Buffer.isBuffer(file?.buffer) || file.buffer.length === 0) {
+    throw new Error('Invalid discussion media upload');
+  }
+
+  const folder = [
+    'cloudiq',
+    'discussions',
+    sanitizeFolderSegment(communityId),
+    sanitizeFolderSegment(channelId),
+  ].join('/');
+  const fileName = sanitizeOriginalFilename(file.originalname);
+  const expectedResourceType = getDiscussionResourceType(file.mimetype);
+
+  console.log('[CLOUDINARY] upload stream started', {
+    communityId,
+    channelId,
+    folder,
+    fileName,
+    mimeType: file.mimetype || null,
+    size: file.size || file.buffer.length,
+    resourceType: 'auto',
+  });
+
+  const result = await uploadToCloudinary(file.buffer, folder, 'auto', {
+    fileName,
+    mimeType: file.mimetype || null,
+    context: {
+      original_filename: fileName,
+      mime_type: file.mimetype || '',
+      community_id: String(communityId),
+      channel_id: String(channelId),
+    },
+  });
+
+  return {
+    secure_url: result.secure_url,
+    public_id: result.public_id,
+    resource_type: result.resource_type || expectedResourceType,
+    bytes: result.bytes || file.size || file.buffer.length,
+    format: result.format || null,
+  };
+}
+
 async function deleteImage(publicId) {
   if (!publicId) return;
   try {
     await cloudinary.uploader.destroy(publicId);
-  } catch (err) {
-    console.error('[Cloudinary] Failed to delete image:', publicId, err.message);
+  } catch (error) {
+    console.error('[Cloudinary] Failed to delete image:', publicId, error.message);
   }
 }
 
-/**
- * Delete media from Cloudinary by public_id and resource type.
- * @param {string} publicId
- * @param {'image'|'video'} resourceType
- * @returns {Promise<void>}
- */
 async function deleteMedia(publicId, resourceType = 'image') {
   if (!publicId) return;
   try {
     await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
-  } catch (err) {
-    console.error('[Cloudinary] Failed to delete media:', publicId, err.message);
+  } catch (error) {
+    console.error('[Cloudinary] Failed to delete media:', publicId, error.message);
   }
 }
 
-module.exports = { uploadBuffer, uploadVideoBuffer, uploadRawBuffer, deleteImage, deleteMedia };
+module.exports = {
+  uploadBuffer,
+  uploadVideoBuffer,
+  uploadRawBuffer,
+  uploadDiscussionMedia,
+  deleteImage,
+  deleteMedia,
+};

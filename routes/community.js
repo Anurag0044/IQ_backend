@@ -479,15 +479,9 @@ router.post(
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      const defaultChannelWrite = await cloudant.postDocument({ db: 'channels', document: defaultChannel }).catch(err => {
-        console.warn('[COMMUNITIES] Failed to create default discussion channel:', err.message);
-        return null;
+      await firebaseService.syncChannel(defaultChannel).catch(err => {
+        console.warn('[COMMUNITIES] Failed to create default Firestore discussion channel:', err.message);
       });
-      if (defaultChannelWrite?.result?.ok) {
-        firebaseService.syncChannel(defaultChannel).catch(err => {
-          console.warn('[COMMUNITIES] Failed to sync default channel:', err.message);
-        });
-      }
 
       const io = req.app.get('io');
       if (io) io.emit('community_created', sanitizeCommunity(community));
@@ -635,50 +629,15 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
       console.error('[COMMUNITIES] Failed to cleanup memberships:', e.message);
     }
 
-    // Remove associated channels and their messages
+    // Remove associated Firestore discussion channels and their messages
     try {
-      const channels = await cloudant.postView({
-        db: 'channels',
-        ddoc: 'channels',
-        view: 'by_community',
-        startKey: [community._id],
-        endKey: [community._id, {}],
-        includeDocs: true,
-        limit: 100
-      });
-      
-      for (const row of (channels.result.rows || [])) {
-        const channelDoc = row.doc;
-        
-        // Delete messages for this channel
-        try {
-          const messages = await cloudant.postView({
-            db: 'messages',
-            ddoc: 'messages',
-            view: 'by_channel_created_at',
-            startKey: [channelDoc._id],
-            endKey: [channelDoc._id, {}],
-            includeDocs: true,
-            limit: 1000
-          });
-          for (const msgRow of (messages.result.rows || [])) {
-            await cloudant.deleteDocument({ db: 'messages', docId: msgRow.doc._id, rev: msgRow.doc._rev });
-          }
-        } catch (msgErr) {}
-
-        // Delete the channel itself
-        await cloudant.deleteDocument({ db: 'channels', docId: channelDoc._id, rev: channelDoc._rev });
-
-        // Cleanup Firebase data for this channel
-        try {
-          await firebaseService.deleteChannel(channelDoc._id);
-          console.log(`[COMMUNITIES] Cleaned Firebase data for channel ${channelDoc._id}`);
-        } catch (firebaseErr) {
-          console.warn('[COMMUNITIES] Firebase cleanup failed for channel:', firebaseErr.message);
-        }
+      const channels = await firebaseService.listChannelsByCommunity(community._id);
+      for (const channelDoc of channels) {
+        await firebaseService.deleteChannel(channelDoc._id || channelDoc.id);
+        console.log(`[COMMUNITIES] Cleaned Firebase data for channel ${channelDoc._id || channelDoc.id}`);
       }
     } catch (e) {
-      console.error('[COMMUNITIES] Failed to cleanup channels/messages:', e.message);
+      console.error('[COMMUNITIES] Failed to cleanup Firestore channels/messages:', e.message);
     }
 
     // Remove community
@@ -892,38 +851,10 @@ router.post('/:id/leave', ensureAuthenticated, async (req, res) => {
     clearCommunityListCache();
     membershipCache.set(`mem:${userId}:${community._id}`, false);
 
-    // Clean up Firebase realtime state for this user's channels in the community
+    // Clean up Firebase discussion presence for this user in the community
     try {
-      if (firebaseService.db) {
-        // Clear typing state for all channels in this community
-        const channelsRes = await cloudant.postView({
-          db: 'channels',
-          ddoc: 'channels',
-          view: 'by_community',
-          startKey: [community._id],
-          endKey: [community._id, {}],
-          limit: 100,
-        });
-        const channelIds = (channelsRes.result.rows || []).map(r => r.key[0] ? r.id : null).filter(Boolean);
-        const channelDocsRes = await cloudant.postView({
-          db: 'channels',
-          ddoc: 'channels',
-          view: 'by_community',
-          startKey: [community._id],
-          endKey: [community._id, {}],
-          includeDocs: true,
-          limit: 100,
-        });
-        const chDocs = (channelDocsRes.result.rows || []).map(r => r.doc).filter(Boolean);
-        for (const ch of chDocs) {
-          await firebaseService.db.ref(`typing/${ch._id}/${userId}`).remove().catch(() => {});
-          await firebaseService.db.ref(`unread/${userId}/${ch._id}`).remove().catch(() => {});
-        }
-        // Clear presence
-        await firebaseService.db.ref(`presence/${userId}`).remove().catch(() => {});
-        await firebaseService.db.ref(`communities/${community._id}/presence/${userId}`).remove().catch(() => {});
-        console.log(`[COMMUNITIES] Firebase leave cleanup done for user=${userId} community=${community._id}`);
-      }
+      await firebaseService.updatePresence({ userId, communityId: community._id, status: 'offline' });
+      console.log(`[COMMUNITIES] Firebase leave cleanup done for user=${userId} community=${community._id}`);
     } catch (fbErr) {
       console.warn('[COMMUNITIES] Firebase leave cleanup error:', fbErr.message);
     }

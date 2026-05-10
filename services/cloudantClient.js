@@ -73,7 +73,10 @@ function wrapCloudantMethod(methodName) {
   cloudant[methodName] = async (params = {}) => {
     const db = params.db || 'unknown';
     const target = params.view ? `${params.ddoc || 'ddoc'}/${params.view}` : (params.docId || '');
-    console.log(`[CLOUDANT] query start ${methodName} db=${db}${target ? ` target=${target}` : ''}`);
+    const shouldLogQuery = ['postView', 'postFind', 'postAllDocs'].includes(methodName);
+    if (shouldLogQuery) {
+      console.log(`[CLOUDANT] query start ${methodName} db=${db}${target ? ` target=${target}` : ''}`);
+    }
 
     try {
       const result = await original(params);
@@ -121,9 +124,6 @@ const DATABASES = [
   'tutorials',    // Stores tutorial documents with Cloudinary image URLs
   'tutorial_media',
   'upload_metadata',
-  // Phase 4: Realtime discussions
-  'channels',
-  'messages',
   // GitHub Codespaces labs
   'lab_sessions',
 ];
@@ -312,35 +312,6 @@ async function createDesignDocs() {
           },
           by_context: {
             map: 'function(doc) { if (doc.context_type && doc.context_id) emit([doc.context_type, doc.context_id, doc.created_at], null); }',
-          },
-        },
-      },
-    },
-    // Channels: query by community + position
-    {
-      db: 'channels',
-      docId: '_design/channels',
-      doc: {
-        _id: '_design/channels',
-        views: {
-          by_community: {
-            map: 'function(doc) { if (doc.community_id) emit([doc.community_id, doc.position || 0, doc.created_at], null); }',
-          },
-        },
-      },
-    },
-    // Messages: query by channel + created_at (history)
-    {
-      db: 'messages',
-      docId: '_design/messages',
-      doc: {
-        _id: '_design/messages',
-        views: {
-          by_channel_created_at: {
-            map: 'function(doc) { if (doc.channel_id && doc.created_at) emit([doc.channel_id, doc.created_at], null); }',
-          },
-          pinned_by_channel: {
-            map: 'function(doc) { if (doc.channel_id && doc.pinned === true && doc.pinned_at) emit([doc.channel_id, doc.pinned_at], null); }',
           },
         },
       },

@@ -8,6 +8,7 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@google-cloud/firestore": "^7.11.6",
     "@ibm-cloud/cloudant": "^0.12.19",
     "@langchain/community": "^1.1.28",
     "@langchain/core": "^1.1.44",
@@ -31,6 +32,7 @@
     "passport": "^0.7.0",
     "passport-github2": "^0.1.12",
     "socket.io": "^4.8.3",
+    "streamifier": "^0.1.1",
     "uuid": "^14.0.0"
   },
   "devDependencies": {

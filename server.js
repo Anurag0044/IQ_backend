@@ -37,6 +37,7 @@ const friendsRoutes = require('./routes/friends');
 const tutorialsRoutes = require('./routes/tutorials');
 const orionRoutes = require('./routes/orion');
 const discussionsRoutes = require('./routes/discussions');
+const firebaseService = require('./services/firebaseService');
 const { attachDiscussionSocketHandlers } = require('./sockets/discussions');
 const { startLabCleanupService, stopLabCleanupService } = require('./services/labCleanupService');
 
@@ -96,6 +97,9 @@ io.on('connection', (socket) => {
     if (payload && typeof payload === 'object') {
       if (payload.email) socket.data.email = String(payload.email).trim().toLowerCase().slice(0, 254);
       if (payload.username) socket.data.username = String(payload.username).trim().slice(0, 120);
+      if (payload.picture) socket.data.picture = String(payload.picture).trim().slice(0, 500);
+      if (payload.profile_image_url) socket.data.profile_image_url = String(payload.profile_image_url).trim().slice(0, 500);
+      if (payload.avatar) socket.data.avatar = String(payload.avatar).trim().slice(0, 500);
     }
 
     const existingSocketId = userSockets.get(userId);
@@ -422,6 +426,40 @@ app.get('/', (req, res) => {
   res.json({ service: 'CloudIQ Backend', status: 'running', timestamp: new Date().toISOString() });
 });
 
+app.get('/api/debug/firestore', async (req, res) => {
+  if (process.env.NODE_ENV === 'production' && process.env.FIRESTORE_DEBUG_ROUTE_ENABLED !== 'true') {
+    return res.status(404).json({ success: false, error: 'Not Found' });
+  }
+
+  try {
+    console.log('[FIRESTORE][DEBUG] route invoked', {
+      node: process.version,
+      platform: process.platform,
+      cwd: process.cwd(),
+    });
+    const doc = await firebaseService.debugFirestoreWrite();
+    return res.json({
+      success: true,
+      message: 'Firestore debug write succeeded',
+      doc,
+    });
+  } catch (err) {
+    console.error('[FIRESTORE][DEBUG] route failed');
+    console.error(err);
+    console.error(err.stack);
+    return res.status(500).json({
+      success: false,
+      error: 'Firestore debug write failed',
+      code: 'firestore_debug_failed',
+      details: process.env.NODE_ENV !== 'production' ? {
+        message: err.message,
+        name: err.name,
+        code: err.code,
+      } : undefined,
+    });
+  }
+});
+
 // ═════════════════════════════════════════════
 //              ROLE + ADMIN MANAGEMENT APIs
 // ═════════════════════════════════════════════
@@ -672,6 +710,34 @@ async function shutdown(signal) {
     process.exit(0);
   });
 }
+
+function isFirestoreGrpcEio(err) {
+  const message = String(err?.message || '');
+  const stack = String(err?.stack || '');
+  return (
+    (err?.code === 'EIO' || /EIO: i\/o error, read/i.test(message)) &&
+    /@grpc|grpc-js|google-cloud[\\/]firestore|@google-cloud[\\/]firestore/i.test(stack)
+  );
+}
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[PROCESS] Unhandled promise rejection');
+  console.error(reason);
+  if (reason?.stack) console.error(reason.stack);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[PROCESS] Uncaught exception');
+  console.error(err);
+  if (err?.stack) console.error(err.stack);
+
+  if (isFirestoreGrpcEio(err)) {
+    console.error('[FIRESTORE][GRPC] Scoped EIO runtime error captured without terminating process');
+    return;
+  }
+
+  process.exit(1);
+});
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));

@@ -16,6 +16,7 @@ function configureSession() {
     secret: process.env.SESSION_SECRET || 'cloudiq-development-session-secret',
     resave: false,
     saveUninitialized: false,
+    proxy: isProduction,
     cookie: {
       secure: isProduction,                           // HTTPS only in production
       httpOnly: true,                                 // Prevents client-side JS access

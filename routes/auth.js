@@ -55,6 +55,20 @@ async function resolvePostLoginRedirectPath(user) {
   }
 }
 
+function logSessionCheck(req, route) {
+  const authenticated = req.isAuthenticated ? req.isAuthenticated() : false;
+  logger.info('[AUTH][SESSION] Session check', {
+    route,
+    authenticated,
+    hasSession: Boolean(req.session),
+    hasPassportSession: Boolean(req.session?.passport),
+    hasUser: Boolean(req.user),
+    hasCookieHeader: Boolean(req.headers?.cookie),
+    origin: req.get('origin') || null,
+  });
+  return authenticated;
+}
+
 /**
  * GET /auth/login
  * Initiates IBM App ID login flow
@@ -164,7 +178,7 @@ router.get('/logout', (req, res, next) => {
  */
 router.get('/user', async (req, res) => {
   // If not authenticated, return loggedIn: false (NOT a 401)
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
+  if (!logSessionCheck(req, '/api/auth/user')) {
     return res.json({
       loggedIn: false,
       success: false,

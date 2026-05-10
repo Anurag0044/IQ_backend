@@ -278,9 +278,11 @@ app.use(morgan(':method :url :status :response-time ms', {
 // 4. Session — MUST be before Passport
 // ─────────────────────────────────────────────
 app.use(session({
+  name: 'connect.sid',
   secret: process.env.SESSION_SECRET || 'cloudiq-development-session-secret',
   resave: false,
   saveUninitialized: false,
+  proxy: isProduction,
   cookie: {
     secure: isProduction,         // true for Render (HTTPS)
     httpOnly: true,               // JS cannot access cookie
@@ -316,6 +318,21 @@ if (hasAppIdCredentials) {
 // Store entire user object in session
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
+
+function logLegacySessionCheck(req, route) {
+  const authenticated = req.isAuthenticated ? req.isAuthenticated() : false;
+  logger.info('[AUTH][SESSION] Session check', {
+    route,
+    authenticated,
+    hasSession: Boolean(req.session),
+    hasPassportSession: Boolean(req.session?.passport),
+    hasUser: Boolean(req.user),
+    hasCookieHeader: Boolean(req.headers?.cookie),
+    origin: req.get('origin') || null,
+    legacyRoute: true,
+  });
+  return authenticated;
+}
 
 // ═════════════════════════════════════════════
 //              AUTH ROUTES
@@ -457,7 +474,7 @@ app.get('/auth/logout', (req, res, next) => {
  */
 app.get('/auth/user', async (req, res) => {
   // Check if user has an active session
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
+  if (!logLegacySessionCheck(req, '/auth/user')) {
     return res.json({
       loggedIn: false,
       success: false,

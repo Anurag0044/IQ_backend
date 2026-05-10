@@ -37,39 +37,87 @@ function ensureAppIdConfigured(_req, res, next) {
   return next();
 }
 
+function getUserEmail(user) {
+  return (user?.email || user?.emails?.[0]?.value || '').toLowerCase();
+}
+
+function getFrontendRedirect(path) {
+  return joinUrl(FRONTEND_URL, path) || path;
+}
+
+async function resolvePostLoginRedirectPath(user) {
+  try {
+    const isAdmin = await adminDb.checkIsAdmin(getUserEmail(user));
+    return isAdmin ? '/admin' : '/dashboard';
+  } catch (err) {
+    logger.error('[AUTH][CALLBACK] Admin check failed; defaulting to dashboard:', err.message);
+    return '/dashboard';
+  }
+}
+
 /**
  * GET /auth/login
  * Initiates IBM App ID login flow
  * Redirects user to App ID hosted login page
  */
-router.get('/login', ensureAppIdConfigured, passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
-  forceLogin: true,
-}));
+router.get('/login', ensureAppIdConfigured, (req, res, next) => {
+  logger.info('[AUTH][APPID] Login start', {
+    path: req.originalUrl,
+    callbackUrl: process.env.APPID_REDIRECT_URI,
+  });
+
+  return passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
+    forceLogin: true,
+  })(req, res, next);
+});
 
 /**
  * GET /auth/callback
  * IBM App ID redirects here after successful authentication
  * Processes the auth code and creates a session
  */
-router.get('/callback', ensureAppIdConfigured, passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
-  failureRedirect: joinUrl(FRONTEND_URL, '/?error=auth_failed') || '/?error=auth_failed',
-  failureFlash: false,
-}), async (req, res) => {
-  // Authentication successful — check role and redirect appropriately
-  const email = (
-    req.user?.email || req.user?.emails?.[0]?.value || ''
-  ).toLowerCase();
-  logger.info('[AUTH] User authenticated:', req.user?.name || email || 'Unknown');
+router.get('/callback', ensureAppIdConfigured, (req, res, next) => {
+  logger.info('[AUTH][CALLBACK] Callback hit', { path: req.originalUrl });
 
-  try {
-    const isAdmin = await adminDb.checkIsAdmin(email);
-    const redirectPath = isAdmin ? '/admin' : '/dashboard';
-    logger.info('[AUTH] Redirecting authenticated user', { isAdmin, redirectPath });
-    res.redirect(joinUrl(FRONTEND_URL, redirectPath) || redirectPath);
-  } catch (err) {
-    logger.error('[AUTH] Admin check error, defaulting to /dashboard:', err.message);
-    res.redirect(joinUrl(FRONTEND_URL, '/dashboard') || '/dashboard');
-  }
+  passport.authenticate(WebAppStrategy.STRATEGY_NAME, (err, user, info) => {
+    if (err) {
+      logger.error('[AUTH][CALLBACK] App ID callback error:', err.message || err);
+      return res.redirect(getFrontendRedirect('/?error=auth_error'));
+    }
+
+    if (!user) {
+      logger.warn('[AUTH][CALLBACK] App ID callback did not return a user.', info);
+      return res.redirect(getFrontendRedirect('/?error=auth_failed'));
+    }
+
+    return req.logIn(user, (loginErr) => {
+      if (loginErr) {
+        logger.error('[AUTH][CALLBACK] Session login error:', loginErr.message || loginErr);
+        return res.redirect(getFrontendRedirect('/?error=session_error'));
+      }
+
+      const finishRedirect = async () => {
+        const { userId } = extractUserInfo(user);
+        const redirectPath = await resolvePostLoginRedirectPath(user);
+        const redirectTarget = getFrontendRedirect(redirectPath);
+        logger.info('[AUTH][CALLBACK] Session created', { hasUserId: Boolean(userId) });
+        logger.info('[AUTH][CALLBACK] Redirect target', { target: redirectTarget });
+        return res.redirect(redirectTarget);
+      };
+
+      if (req.session && typeof req.session.save === 'function') {
+        return req.session.save((saveErr) => {
+          if (saveErr) {
+            logger.error('[AUTH][CALLBACK] Session save error:', saveErr.message || saveErr);
+            return res.redirect(getFrontendRedirect('/?error=session_error'));
+          }
+          return finishRedirect();
+        });
+      }
+
+      return finishRedirect();
+    });
+  })(req, res, next);
 });
 
 /**

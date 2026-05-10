@@ -26,6 +26,15 @@ function isValidUrl(value) {
   }
 }
 
+function isLocalhostUrl(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
 function getFrontendUrl() {
   return splitOrigins(process.env.FRONTEND_URL)[0] || '';
 }
@@ -94,10 +103,20 @@ const requiredProductionEnv = [
 
 function validateEnvironment() {
   const missing = requiredProductionEnv.filter((name) => !clean(process.env[name]));
-  const invalidOrigins = [
-    ...getAllowedOrigins().filter((origin) => !isValidUrl(origin)),
-    ...(getBackendUrl() && !isValidUrl(getBackendUrl()) ? [getBackendUrl()] : []),
-  ];
+  const callbackUrls = [
+    clean(process.env.APPID_REDIRECT_URI),
+    clean(process.env.GITHUB_CALLBACK_URL),
+  ].filter(Boolean);
+  const configuredUrls = Array.from(new Set([
+    ...getAllowedOrigins(),
+    getBackendUrl(),
+    ...callbackUrls,
+  ].filter(Boolean)));
+  const invalidUrls = configuredUrls.filter((url) => !isValidUrl(url));
+  const localhostUrls = isProduction
+    ? configuredUrls.filter((url) => isLocalhostUrl(url))
+    : [];
+  const trailingSlashCallbacks = callbackUrls.filter((url) => /\/$/.test(url));
 
   if (missing.length > 0) {
     const message = `[ENV] Missing required production environment variable(s): ${missing.join(', ')}`;
@@ -108,13 +127,23 @@ function validateEnvironment() {
     logger.warn(message);
   }
 
-  if (invalidOrigins.length > 0) {
-    const message = `[ENV] Invalid origin URL configuration: ${invalidOrigins.join(', ')}`;
+  if (invalidUrls.length > 0) {
+    const message = `[ENV] Invalid URL configuration: ${invalidUrls.join(', ')}`;
     if (isProduction) {
       logger.error(message);
       process.exit(1);
     }
     logger.warn(message);
+  }
+
+  if (localhostUrls.length > 0) {
+    const message = `[ENV] Production URL configuration must not use localhost: ${localhostUrls.join(', ')}`;
+    logger.error(message);
+    process.exit(1);
+  }
+
+  if (trailingSlashCallbacks.length > 0) {
+    logger.warn(`[ENV] OAuth callback URL(s) include a trailing slash. Provider dashboard values must match exactly: ${trailingSlashCallbacks.join(', ')}`);
   }
 
   if (isProduction && process.env.SESSION_SECRET === 'cloudiq-fallback-secret') {

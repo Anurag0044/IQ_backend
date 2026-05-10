@@ -315,15 +315,24 @@ npm start
 
 ```bash
 curl <BACKEND_URL>/
+curl <BACKEND_URL>/api/health
 ```
 
-Expected response:
+Expected root response:
 
 ```json
 {
-  "service": "CloudIQ Backend",
-  "status": "running",
-  "timestamp": "2026-05-10T00:00:00.000Z"
+  "success": true,
+  "message": "CloudIQ backend running"
+}
+```
+
+Expected API health response:
+
+```json
+{
+  "success": true,
+  "status": "healthy"
 }
 ```
 
@@ -354,7 +363,7 @@ Use a real `.env` file locally and secure environment variables in production.
 | `APPID_CLIENT_ID` | Yes | `client-id` | IBM App ID client ID. |
 | `APPID_SECRET` | Yes | `client-secret` | IBM App ID client secret. |
 | `APPID_OAUTH_SERVER_URL` | Yes | `https://...appid.cloud.ibm.com/oauth/v4/...` | IBM App ID OAuth server URL. |
-| `APPID_REDIRECT_URI` | Yes | `<BACKEND_URL>/auth/callback` | Redirect URI configured in IBM App ID. |
+| `APPID_REDIRECT_URI` | Yes | `<BACKEND_URL>/api/auth/callback` | Redirect URI configured in IBM App ID. Use `/auth/callback` only for older deployments that intentionally use the legacy alias. |
 | `ADMIN_ROLE_NAME` | No | `admin` | Role name used for admin detection in some auth paths. |
 | `ADMIN_EMAILS` | Recommended | `admin@example.com,owner@example.com` | Super admin email allowlist. |
 
@@ -434,7 +443,7 @@ APPID_TENANT_ID=
 APPID_CLIENT_ID=
 APPID_SECRET=
 APPID_OAUTH_SERVER_URL=
-APPID_REDIRECT_URI=<BACKEND_URL>/auth/callback
+APPID_REDIRECT_URI=<BACKEND_URL>/api/auth/callback
 ADMIN_EMAILS=admin@example.com
 
 FIREBASE_PROJECT_ID=
@@ -611,6 +620,14 @@ Store access token in session
     v
 Frontend can list repos and launch labs
 ```
+
+The GitHub OAuth app callback URL must match:
+
+```text
+<BACKEND_URL>/api/github/callback
+```
+
+If `GITHUB_CALLBACK_URL` is not set, the backend derives this route from `BACKEND_URL`.
 
 ### Repository APIs
 
@@ -857,7 +874,7 @@ npm start
 8. Update IBM App ID redirect URI:
 
 ```text
-https://your-backend-domain.onrender.com/auth/callback
+https://your-backend-domain.onrender.com/api/auth/callback
 ```
 
 9. Update GitHub OAuth callback URL:
@@ -1303,24 +1320,30 @@ https://api.example.com
 
 | Method | Endpoint | Auth | Description |
 | --- | --- | --- | --- |
-| GET | `/` | No | Health check |
+| GET | `/` | No | Deployment status check |
+| GET | `/api/health` | No | API health check |
 | GET | `/api/debug/firestore` | Debug only | Test Firestore write |
 
 ### Authentication
 
 | Method | Endpoint | Auth | Description |
 | --- | --- | --- | --- |
-| GET | `/auth/login` | No | Start IBM App ID login |
-| GET | `/auth/callback` | No | IBM App ID callback |
-| GET | `/auth/logout` | Session | Destroy session and redirect |
-| GET | `/auth/user` | Optional | Return current user/session state |
-| GET | `/auth/status` | Optional | Lightweight auth check |
+| GET | `/api/auth/login` | No | Start IBM App ID login |
+| GET | `/api/auth/callback` | No | IBM App ID callback |
+| GET | `/api/auth/logout` | Session | Destroy session and redirect |
+| GET | `/api/auth/user` | Optional | Return current user/session state |
+| GET | `/api/auth/status` | Optional | Lightweight auth check |
+| GET | `/api/auth/debug-user` | Optional, non-production only | Inspect App ID user payload while debugging |
 | GET | `/api/user-role` | Session | Return email and admin role |
 
-Mounted auth route equivalents also exist under:
+Legacy auth aliases remain available for existing deployments and OAuth provider settings:
 
 ```text
-/api/auth/*
+/auth/login
+/auth/callback
+/auth/logout
+/auth/user
+/auth/status
 ```
 
 ### Admin

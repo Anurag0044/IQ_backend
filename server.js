@@ -62,6 +62,10 @@ validateEnvironment();
 
 const FRONTEND_URL = getFrontendUrl();
 const BACKEND_URL = getBackendUrl();
+const CANONICAL_APPID_CALLBACK_PATH = '/api/auth/callback';
+const LEGACY_APPID_CALLBACK_PATH = '/auth/callback';
+const EXPECTED_APPID_CALLBACK_URL = joinUrl(BACKEND_URL, CANONICAL_APPID_CALLBACK_PATH);
+const CONFIGURED_APPID_CALLBACK_URL = process.env.APPID_REDIRECT_URI || '';
 const EXPECTED_GITHUB_CALLBACK_URL = joinUrl(BACKEND_URL, '/api/github/callback');
 const CONFIGURED_GITHUB_CALLBACK_URL = process.env.GITHUB_CALLBACK_URL || EXPECTED_GITHUB_CALLBACK_URL;
 const hasAppIdCredentials = Boolean(
@@ -94,6 +98,26 @@ function logMountedRoutes() {
 
   logger.info('[ROUTES] Health mounted at /');
   logger.info('[ROUTES] Health mounted at /api/health');
+  logger.info(`[ROUTES] IBM App ID callback mounted at ${CANONICAL_APPID_CALLBACK_PATH}`);
+  logger.info(`[ROUTES] IBM App ID legacy callback mounted at ${LEGACY_APPID_CALLBACK_PATH}`);
+
+  if (CONFIGURED_APPID_CALLBACK_URL) {
+    logger.info('[APPID][CALLBACK] IBM App ID redirect URI configured at ' + CONFIGURED_APPID_CALLBACK_URL);
+  }
+
+  if (EXPECTED_APPID_CALLBACK_URL && CONFIGURED_APPID_CALLBACK_URL !== EXPECTED_APPID_CALLBACK_URL) {
+    const configuredPath = (() => {
+      try { return new URL(CONFIGURED_APPID_CALLBACK_URL).pathname.replace(/\/+$/, '') || '/'; }
+      catch { return null; }
+    })();
+    const usesLegacyRoute = configuredPath === LEGACY_APPID_CALLBACK_PATH;
+    logger.warn('[APPID][CALLBACK] APPID_REDIRECT_URI differs from canonical backend callback', {
+      expected: EXPECTED_APPID_CALLBACK_URL,
+      configured: CONFIGURED_APPID_CALLBACK_URL,
+      routeExists: configuredPath === CANONICAL_APPID_CALLBACK_PATH || usesLegacyRoute,
+      legacyRoute: usesLegacyRoute,
+    });
+  }
 
   if (CONFIGURED_GITHUB_CALLBACK_URL) {
     logger.info('[ROUTES] GitHub OAuth callback at ' + CONFIGURED_GITHUB_CALLBACK_URL);
@@ -307,6 +331,12 @@ app.get('/auth/login', (req, res, next) => {
     return res.status(503).send('Authentication is not configured on this backend instance.');
   }
 
+  logger.info('[AUTH][APPID] Login start', {
+    path: req.originalUrl,
+    callbackUrl: process.env.APPID_REDIRECT_URI,
+    legacyRoute: true,
+  });
+
   return passport.authenticate(WebAppStrategy.STRATEGY_NAME)(req, res, next);
 });
 
@@ -323,6 +353,8 @@ app.get('/auth/callback', (req, res, next) => {
   if (!hasAppIdCredentials) {
     return res.status(503).send('Authentication is not configured on this backend instance.');
   }
+
+  logger.info('[AUTH][CALLBACK] Callback hit', { path: req.originalUrl, legacyRoute: true });
 
   passport.authenticate(WebAppStrategy.STRATEGY_NAME, (err, user, info) => {
     // Handle authentication errors
@@ -347,14 +379,28 @@ app.get('/auth/callback', (req, res, next) => {
       // ✅ SUCCESS — check admin role BEFORE redirecting
       const email = (user.email || (user.emails && user.emails[0]?.value) || '').toLowerCase();
       logger.info('[AUTH] Login successful:', user.name || email || 'Unknown');
+      logger.info('[AUTH][CALLBACK] Session created', { legacyRoute: true });
+
+      if (req.session && typeof req.session.save === 'function') {
+        try {
+          await new Promise((resolve, reject) => {
+            req.session.save((saveErr) => saveErr ? reject(saveErr) : resolve());
+          });
+        } catch (saveErr) {
+          logger.error('[AUTH][CALLBACK] Session save error:', saveErr.message || saveErr);
+          return res.redirect(FRONTEND_URL + '/?error=session_error');
+        }
+      }
 
       try {
         const isAdmin = await adminDb.checkIsAdmin(email);
         const redirectPath = isAdmin ? '/admin' : '/dashboard';
+        logger.info('[AUTH][CALLBACK] Redirect target', { target: FRONTEND_URL + redirectPath, legacyRoute: true });
         logger.info(`[AUTH] User is ${isAdmin ? 'ADMIN' : 'USER'}; redirecting to ${FRONTEND_URL}${redirectPath}`);
         return res.redirect(FRONTEND_URL + redirectPath);
       } catch (adminErr) {
         logger.error('[AUTH] Admin check failed, defaulting to /dashboard:', adminErr.message);
+        logger.info('[AUTH][CALLBACK] Redirect target', { target: FRONTEND_URL + '/dashboard', legacyRoute: true });
         return res.redirect(FRONTEND_URL + '/dashboard');
       }
     });

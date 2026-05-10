@@ -86,10 +86,102 @@ router.get('/profile', ensureAuthenticated, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// GET /api/user/dashboard (legacy stub)
+// GET /api/user/dashboard
+// Returns real-time timeSpent, tutorialsCount, activities
 // ─────────────────────────────────────────────
-router.get('/dashboard', ensureAuthenticated, (req, res) => {
-  res.json({ success: true, data: { recentCourses: [], progress: { completed: 0, inProgress: 0, total: 0 }, streakDays: 0 } });
+router.get('/dashboard', ensureAuthenticated, async (req, res) => {
+  try {
+    const userId = getUserId(req);
+
+    // 1. Fetch user doc for time_spent + activities
+    let userDoc;
+    try {
+      userDoc = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
+    } catch (err) {
+      if (err.status === 404) {
+        return res.json({ success: true, data: { timeSpent: 0, tutorialsCount: 0, activities: [] } });
+      }
+      throw err;
+    }
+
+    // 2. Count tutorials
+    let tutorialsCount = 0;
+    try {
+      const tutResp = await cloudant.postAllDocs({ db: 'tutorials' });
+      tutorialsCount = (tutResp.result.rows || []).filter(r => !r.id.startsWith('_design')).length;
+    } catch (err) {
+      console.warn('[User] tutorials count failed:', err.message);
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        timeSpent: userDoc.time_spent || 0,
+        points: userDoc.points || 0,
+        dailyTimeSpent: userDoc.daily_time_spent || {},
+        tutorialsCount,
+        activities: userDoc.activities || [],
+      },
+    });
+  } catch (err) {
+    console.error('[User] Dashboard error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// PUT /api/user/sync-session
+// Adds elapsed minutes to time_spent, optionally logs an activity
+// ─────────────────────────────────────────────
+router.put('/sync-session', ensureAuthenticated, async (req, res) => {
+  const MAX_RETRIES = 2;
+  try {
+    const userId = getUserId(req);
+    const { timeAdded = 0, activity, pointsAdded = 0 } = req.body;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const existing = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
+
+        let time_spent = (existing.time_spent || 0) + timeAdded;
+        let points = (existing.points || 0) + pointsAdded;
+
+        let daily_time_spent = existing.daily_time_spent || {};
+        if (timeAdded > 0) {
+          const today = new Date().toISOString().split('T')[0];
+          daily_time_spent[today] = (daily_time_spent[today] || 0) + timeAdded;
+        }
+
+        let activities = existing.activities || [];
+        if (activity) {
+          activities.unshift({
+            title: activity.title || 'Activity',
+            desc: activity.desc || '',
+            icon: activity.icon || 'BookOpen',
+            time: new Date().toISOString(),
+          });
+          if (activities.length > 10) activities = activities.slice(0, 10);
+        }
+
+        const updated = { ...existing, time_spent, points, daily_time_spent, activities, updated_at: new Date().toISOString() };
+        // Use postDocument (not putDocument) — Cloudant IAM key may lack PUT permission
+        // postDocument with _id + _rev in the body performs an update
+        await cloudant.postDocument({ db: DB_NAME, document: updated });
+
+        return res.json({ success: true, data: { timeSpent: time_spent, points, dailyTimeSpent: daily_time_spent, activities } });
+      } catch (innerErr) {
+        // 409 = rev conflict, retry with fresh doc
+        if (innerErr.status === 409 && attempt < MAX_RETRIES) {
+          console.warn(`[User] sync-session rev conflict, retrying (${attempt + 1}/${MAX_RETRIES})`);
+          continue;
+        }
+        throw innerErr;
+      }
+    }
+  } catch (err) {
+    console.error('[User] sync-session error:', err.status, err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────────
@@ -189,7 +281,7 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
       updated_at: new Date().toISOString(),
     };
 
-    await cloudant.putDocument({ db: DB_NAME, docId: userId, document: updated });
+    await cloudant.postDocument({ db: DB_NAME, document: updated });
     console.log(`[User] Profile updated: ${updated.username} (${userId})`);
 
     const { profile_image_public_id: _p, _rev: _r, ...safe } = updated;
@@ -224,7 +316,7 @@ router.delete('/profile-image', ensureAuthenticated, async (req, res) => {
       profile_image_public_id: null,
       updated_at: new Date().toISOString(),
     };
-    await cloudant.putDocument({ db: DB_NAME, docId: userId, document: updated });
+    await cloudant.postDocument({ db: DB_NAME, document: updated });
 
     console.log(`[User] Profile image removed for: ${userId}`);
     const { profile_image_public_id: _p, _rev: _r, ...safe } = updated;

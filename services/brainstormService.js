@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
-const cloudant = require('./cloudantClient');
+const db = require('./firestoreClient');
 const firebaseService = require('./firebaseService');
 const { communityCache, membershipCache, adminCache } = require('./cacheService');
 const { extractUserInfo, checkAdminRole, checkAdminRoleSync } = require('../middleware/auth');
@@ -345,7 +345,7 @@ async function getCommunityOr404(communityId, { bustCache = false } = {}) {
   }
 
   try {
-    const doc = (await cloudant.getDocument({ db: DB_COMMUNITIES, docId: safeCommunityId })).result;
+    const doc = await db.getDoc(DB_COMMUNITIES, safeCommunityId);
     communityCache.set(cacheKey, doc);
     return doc;
   } catch (err) {
@@ -363,14 +363,20 @@ async function isCommunityMember(userId, community) {
   if (cached === true) return true;
 
   try {
-    const response = await cloudant.postView({
-      db: DB_MEMBERSHIPS,
-      ddoc: 'community_memberships',
-      view: 'by_community',
-      key: [community._id, userId],
-      limit: 1,
-    });
-    const isMember = (response.result.rows || []).length > 0;
+    const communityId = community._id || community.id;
+    // Check direct membership doc first
+    const membershipId = `${communityId}_${userId}`;
+    const membershipDoc = await db.getDoc(DB_MEMBERSHIPS, membershipId).catch(() => null);
+    if (membershipDoc) {
+      membershipCache.set(cacheKey, true);
+      return true;
+    }
+    // Fallback query
+    const results = await db.queryDocs(DB_MEMBERSHIPS, [
+      ['community_id', '==', communityId],
+      ['user_id', '==', userId],
+    ], null, 'asc', 1);
+    const isMember = results.length > 0;
     if (isMember) membershipCache.set(cacheKey, true);
     return isMember;
   } catch (err) {

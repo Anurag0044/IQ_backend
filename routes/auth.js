@@ -1,184 +1,19 @@
-// ============================================
-// CloudIQ Backend - Authentication Routes
-// ============================================
-// Handles login, callback, logout, and session info
-// FIXED: Passport.js v0.6+ requires callback on req.logout()
-// FIXED: /auth/user returns loggedIn:false instead of 401
-// FIXED: Role extraction from _json.roles (App ID actual location)
-
 const express = require('express');
-const passport = require('passport');
-const { WebAppStrategy } = require('ibmcloud-appid');
-const { checkAdminRole, extractUserInfo } = require('../middleware/auth');
+const { verifyFirebaseToken } = require('../middleware/auth');
 const adminDb = require('../services/adminDb');
+const db = require('../services/firestoreClient');
 const logger = require('../utils/logger');
-const { getFrontendUrl, joinUrl } = require('../config/env');
 
 const router = express.Router();
-const { ensureAuthenticated } = require('../middleware/authMiddleware');
-const FRONTEND_URL = getFrontendUrl();
 
-const hasAppIdCredentials = Boolean(
-  process.env.APPID_TENANT_ID &&
-  process.env.APPID_CLIENT_ID &&
-  process.env.APPID_SECRET &&
-  process.env.APPID_OAUTH_SERVER_URL &&
-  process.env.APPID_REDIRECT_URI
-);
-
-function ensureAppIdConfigured(_req, res, next) {
-  if (!hasAppIdCredentials) {
-    logger.warn('[AUTH] IBM App ID is not configured for /api/auth route.');
-    return res.status(503).json({
-      success: false,
-      error: 'Authentication is not configured on this backend instance.',
-    });
-  }
-  return next();
-}
-
-function getUserEmail(user) {
-  return (user?.email || user?.emails?.[0]?.value || '').toLowerCase();
-}
-
-function getFrontendRedirect(path) {
-  return joinUrl(FRONTEND_URL, path) || path;
-}
-
-async function resolvePostLoginRedirectPath(user) {
-  try {
-    const isAdmin = await adminDb.checkIsAdmin(getUserEmail(user));
-    return isAdmin ? '/admin' : '/dashboard';
-  } catch (err) {
-    logger.error('[AUTH][CALLBACK] Admin check failed; defaulting to dashboard:', err.message);
-    return '/dashboard';
-  }
-}
-
-function logSessionCheck(req, route) {
-  const authenticated = req.isAuthenticated ? req.isAuthenticated() : false;
-  logger.info('[AUTH][SESSION] Session check', {
-    route,
-    authenticated,
-    hasSession: Boolean(req.session),
-    hasPassportSession: Boolean(req.session?.passport),
-    hasUser: Boolean(req.user),
-    hasCookieHeader: Boolean(req.headers?.cookie),
-    origin: req.get('origin') || null,
-  });
-  return authenticated;
-}
+router.use(verifyFirebaseToken);
 
 /**
- * GET /auth/login
- * Initiates IBM App ID login flow
- * Redirects user to App ID hosted login page
- */
-router.get('/login', ensureAppIdConfigured, (req, res, next) => {
-  logger.info('[AUTH][APPID] Login start', {
-    path: req.originalUrl,
-    callbackUrl: process.env.APPID_REDIRECT_URI,
-  });
-
-  return passport.authenticate(WebAppStrategy.STRATEGY_NAME, {
-    forceLogin: true,
-  })(req, res, next);
-});
-
-/**
- * GET /auth/callback
- * IBM App ID redirects here after successful authentication
- * Processes the auth code and creates a session
- */
-router.get('/callback', ensureAppIdConfigured, (req, res, next) => {
-  logger.info('[AUTH][CALLBACK] Callback hit', { path: req.originalUrl });
-
-  passport.authenticate(WebAppStrategy.STRATEGY_NAME, (err, user, info) => {
-    if (err) {
-      logger.error('[AUTH][CALLBACK] App ID callback error:', err.message || err);
-      return res.redirect(getFrontendRedirect('/?error=auth_error'));
-    }
-
-    if (!user) {
-      logger.warn('[AUTH][CALLBACK] App ID callback did not return a user.', info);
-      return res.redirect(getFrontendRedirect('/?error=auth_failed'));
-    }
-
-    return req.logIn(user, (loginErr) => {
-      if (loginErr) {
-        logger.error('[AUTH][CALLBACK] Session login error:', loginErr.message || loginErr);
-        return res.redirect(getFrontendRedirect('/?error=session_error'));
-      }
-
-      const finishRedirect = async () => {
-        const { userId } = extractUserInfo(user);
-        const redirectPath = await resolvePostLoginRedirectPath(user);
-        const redirectTarget = getFrontendRedirect(redirectPath);
-        logger.info('[AUTH][CALLBACK] Session created', { hasUserId: Boolean(userId) });
-        logger.info('[AUTH][CALLBACK] Redirect target', { target: redirectTarget });
-        return res.redirect(redirectTarget);
-      };
-
-      if (req.session && typeof req.session.save === 'function') {
-        return req.session.save((saveErr) => {
-          if (saveErr) {
-            logger.error('[AUTH][CALLBACK] Session save error:', saveErr.message || saveErr);
-            return res.redirect(getFrontendRedirect('/?error=session_error'));
-          }
-          return finishRedirect();
-        });
-      }
-
-      return finishRedirect();
-    });
-  })(req, res, next);
-});
-
-/**
- * GET /auth/logout
- * Destroys user session and clears cookies
- * FIXED: req.logout() requires callback in Passport.js >= 0.6
- */
-router.get('/logout', (req, res, next) => {
-  // Clear the App ID tokens from session
-  try {
-    WebAppStrategy.logout(req);
-  } catch (e) {
-    logger.error('[AUTH] WebAppStrategy.logout error:', e.message);
-  }
-
-  // Passport logout with required callback
-  req.logout(function (err) {
-    if (err) {
-      logger.error('[AUTH] Passport logout error:', err);
-      return next(err);
-    }
-
-    // Destroy the express session
-    req.session.destroy((destroyErr) => {
-      if (destroyErr) {
-        logger.error('[AUTH] Session destruction error:', destroyErr);
-      }
-
-      // Clear all possible session cookies
-      res.clearCookie('cloudiq.sid');
-      res.clearCookie('connect.sid');
-
-      // Redirect to frontend landing page
-      res.redirect(FRONTEND_URL || '/');
-    });
-  });
-});
-
-/**
- * GET /auth/user
+ * GET /user
  * Returns the current authenticated user's info
- * FIXED: Returns loggedIn:false instead of 401 when not authenticated
- * This allows the frontend to check auth state without triggering redirects
  */
 router.get('/user', async (req, res) => {
-  // If not authenticated, return loggedIn: false (NOT a 401)
-  if (!logSessionCheck(req, '/api/auth/user')) {
+  if (!req.firebaseUser) {
     return res.json({
       loggedIn: false,
       success: false,
@@ -186,12 +21,9 @@ router.get('/user', async (req, res) => {
     });
   }
 
-  const user = req.user;
-  const { userId } = extractUserInfo(user);
-  const roles = extractRoles(user);
-  const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
+  const { uid, email, name, picture } = req.firebaseUser;
 
-  // Async admin check against Cloudant + ADMIN_EMAILS
+  // Async admin check
   let isAdmin = false;
   try {
     isAdmin = await adminDb.checkIsAdmin(email);
@@ -199,34 +31,31 @@ router.get('/user', async (req, res) => {
     logger.error('[AUTH] /auth/user admin check failed:', e.message);
   }
 
-  // Build a safe user response (no tokens exposed to frontend)
   res.json({
     loggedIn: true,
     success: true,
     user: {
-      sub: userId || null,
-      userId: userId || null,
-      name: user.name || user.given_name || 'User',
-      email: email || null,
-      picture: user.picture || null,
+      sub: uid,
+      userId: uid,
+      name: name,
+      email: email,
+      picture: picture,
       isAdmin: isAdmin,
-      roles: roles,
     },
   });
 });
 
 /**
- * GET /auth/status
- * Quick check if user is authenticated (no sensitive data)
+ * GET /status
+ * Quick check if user is authenticated
  */
 router.get('/status', async (req, res) => {
-  const authenticated = req.isAuthenticated ? req.isAuthenticated() : false;
+  const authenticated = !!req.firebaseUser;
   let isAdmin = false;
 
-  if (authenticated && req.user) {
+  if (authenticated) {
     try {
-      const email = (req.user.email || req.user.emails?.[0]?.value || '').toLowerCase();
-      isAdmin = await adminDb.checkIsAdmin(email);
+      isAdmin = await adminDb.checkIsAdmin(req.firebaseUser.email);
     } catch (e) { /* ignore */ }
   }
 
@@ -237,114 +66,33 @@ router.get('/status', async (req, res) => {
 });
 
 /**
- * GET /debug-user
- * DEBUG ONLY — dumps the raw user object from session
- * Use this to verify what App ID returns and where roles live
- * Visit the backend /auth/debug-user route in a non-production environment.
+ * POST /sync
+ * Synchronize user profile in Firestore
  */
-router.get('/debug-user', (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(404).json({ success: false, error: 'Not Found' });
+router.post('/sync', async (req, res) => {
+  if (!req.firebaseUser) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
-    return res.json({
-      loggedIn: false,
-      message: 'Not authenticated. Login first at /auth/login',
-    });
+  const { uid, email } = req.firebaseUser;
+  const { displayName, photoURL } = req.body;
+
+  try {
+    const updateData = {
+      email,
+      last_login: new Date().toISOString()
+    };
+    
+    if (displayName) updateData.name = displayName;
+    if (photoURL) updateData.avatar = photoURL;
+
+    await db.batchSet('users', uid, updateData);
+
+    res.json({ success: true, message: 'User synced successfully' });
+  } catch (err) {
+    logger.error('[AUTH] Failed to sync user:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to sync user' });
   }
-
-  // Return the full raw user object for debugging
-  const user = req.user;
-  const roles = extractRoles(user);
-
-  res.json({
-    loggedIn: true,
-    extractedRoles: roles,
-    isAdmin: roles.includes(process.env.ADMIN_ROLE_NAME || 'admin'),
-    rawUser: user,
-    // Show exactly where we found roles
-    roleLocations: {
-      'user.roles': user.roles || 'NOT FOUND',
-      'user._json.roles': user._json?.roles || 'NOT FOUND',
-      'identityToken.roles': (() => {
-        try {
-          if (!user.identityToken) return 'NO TOKEN';
-          const p = JSON.parse(Buffer.from(user.identityToken.split('.')[1], 'base64').toString());
-          return p.roles || 'NOT IN TOKEN';
-        } catch { return 'DECODE ERROR'; }
-      })(),
-      'accessToken.scope': (() => {
-        try {
-          if (!user.accessToken) return 'NO TOKEN';
-          const p = JSON.parse(Buffer.from(user.accessToken.split('.')[1], 'base64').toString());
-          return p.scope || 'NOT IN TOKEN';
-        } catch { return 'DECODE ERROR'; }
-      })(),
-      'user.attributes.role': user.attributes?.role || 'NOT FOUND',
-    },
-  });
 });
-
-/**
- * Extract roles from the user object
- * Checks ALL known locations where IBM App ID stores roles
- * @param {Object} user - Passport user object
- * @returns {string[]} Array of role names
- */
-function extractRoles(user) {
-  if (!user) return [];
-
-  const rolesSet = new Set();
-
-  // 1. Direct roles array on user object
-  if (Array.isArray(user.roles)) {
-    user.roles.forEach((r) => rolesSet.add(r));
-  }
-
-  // 2. _json.roles — THIS IS WHERE APP ID ACTUALLY PUTS ROLES
-  //    When "Add roles to ID token" is enabled in App ID dashboard
-  if (user._json && Array.isArray(user._json.roles)) {
-    user._json.roles.forEach((r) => rolesSet.add(r));
-  }
-
-  // 3. Identity token roles claim
-  if (user.identityToken) {
-    try {
-      const payload = JSON.parse(
-        Buffer.from(user.identityToken.split('.')[1], 'base64').toString()
-      );
-      if (Array.isArray(payload.roles)) {
-        payload.roles.forEach((r) => rolesSet.add(r));
-      }
-    } catch (e) {
-      // silently skip
-    }
-  }
-
-  // 4. Access token scope
-  if (user.accessToken) {
-    try {
-      const payload = JSON.parse(
-        Buffer.from(user.accessToken.split('.')[1], 'base64').toString()
-      );
-      if (typeof payload.scope === 'string') {
-        // scope is space-separated
-        payload.scope.split(' ').forEach((s) => {
-          if (s && !s.startsWith('openid')) rolesSet.add(s);
-        });
-      }
-    } catch (e) {
-      // silently skip
-    }
-  }
-
-  // 5. User attributes
-  if (user.attributes?.role) {
-    rolesSet.add(user.attributes.role);
-  }
-
-  return Array.from(rolesSet);
-}
 
 module.exports = router;

@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
-const cloudant = require('./cloudantClient');
+const db = require('./firestoreClient');
 const { uploadBuffer, uploadVideoBuffer, uploadRawBuffer, deleteMedia } = require('./cloudinaryService');
 
 async function recordUploadMetadata({
@@ -14,8 +14,9 @@ async function recordUploadMetadata({
 }) {
   if (!ownerId || !url || !publicId) return null;
 
+  const id = uuidv4();
   const doc = {
-    _id: uuidv4(),
+    _id: id,
     owner_id: ownerId,
     context_type: contextType || null,
     context_id: contextId || null,
@@ -28,7 +29,7 @@ async function recordUploadMetadata({
   };
 
   try {
-    await cloudant.postDocument({ db: 'upload_metadata', document: doc });
+    await db.setDoc('upload_metadata', id, doc);
     return doc;
   } catch (err) {
     console.warn('[MEDIA] Upload metadata write failed:', err.message);
@@ -39,8 +40,9 @@ async function recordUploadMetadata({
 async function recordTutorialMedia({ tutorialId, url, publicId, resourceType }) {
   if (!tutorialId || !url || !publicId) return null;
 
+  const id = uuidv4();
   const doc = {
-    _id: uuidv4(),
+    _id: id,
     tutorial_id: tutorialId,
     url,
     public_id: publicId,
@@ -49,7 +51,7 @@ async function recordTutorialMedia({ tutorialId, url, publicId, resourceType }) 
   };
 
   try {
-    await cloudant.postDocument({ db: 'tutorial_media', document: doc });
+    await db.setDoc('tutorial_media', id, doc);
     return doc;
   } catch (err) {
     console.warn('[MEDIA] Tutorial media write failed:', err.message);

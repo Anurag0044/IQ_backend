@@ -81,8 +81,6 @@ const requiredProductionEnv = [
   'FRONTEND_URL',
   'BACKEND_URL',
   'SESSION_SECRET',
-  'CLOUDANT_APIKEY',
-  'CLOUDANT_URL',
   'FIREBASE_PROJECT_ID',
   'FIREBASE_CLIENT_EMAIL',
   'FIREBASE_PRIVATE_KEY',
@@ -93,18 +91,12 @@ const requiredProductionEnv = [
   'GITHUB_CLIENT_ID',
   'GITHUB_CLIENT_SECRET',
   'LAB_TOKEN_ENCRYPTION_KEY',
-  'APPID_TENANT_ID',
-  'APPID_CLIENT_ID',
-  'APPID_SECRET',
-  'APPID_OAUTH_SERVER_URL',
-  'APPID_REDIRECT_URI',
   'ORION_API_KEY',
 ];
 
 function validateEnvironment() {
   const missing = requiredProductionEnv.filter((name) => !clean(process.env[name]));
   const callbackUrls = [
-    clean(process.env.APPID_REDIRECT_URI),
     clean(process.env.GITHUB_CALLBACK_URL),
   ].filter(Boolean);
   const configuredUrls = Array.from(new Set([

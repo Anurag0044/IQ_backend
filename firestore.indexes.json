@@ -1,40 +1,182 @@
 {
   "indexes": [
     {
-      "collectionGroup": "labs",
+      "collectionGroup": "posts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        { "fieldPath": "community_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
       ]
     },
     {
-      "collectionGroup": "labs",
+      "collectionGroup": "posts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" },
-        { "fieldPath": "active", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        { "fieldPath": "author_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
       ]
     },
     {
-      "collectionGroup": "labs",
+      "collectionGroup": "posts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "active", "order": "ASCENDING" },
-        { "fieldPath": "expiresAt", "order": "ASCENDING" }
+        { "fieldPath": "is_pinned", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
       ]
     },
     {
-      "collectionGroup": "lab_sessions",
+      "collectionGroup": "comments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "startedAt", "order": "DESCENDING" }
+        { "fieldPath": "post_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "comments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "author_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "read", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "from_user_id", "order": "ASCENDING" },
+        { "fieldPath": "read", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "friendships",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sender_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "friendships",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "receiver_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "friendships",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sender_id", "order": "ASCENDING" },
+        { "fieldPath": "receiver_id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "community_memberships",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "community_id", "order": "ASCENDING" },
+        { "fieldPath": "user_id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "community_memberships",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "joined_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "community_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "community_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "community_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "community_id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "tutorials",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "author_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "tutorials",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "is_published", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "tutorial_media",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "tutorial_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "upload_metadata",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "is_onboarded", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "communities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "is_public", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "communities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "owner_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
       ]
     }
   ],

@@ -1,13 +1,11 @@
 // ============================================
 // CloudIQ Backend - Main Server
 // ============================================
-// Complete auth flow:
-//   Login:  Frontend → /api/auth/login → IBM App ID → configured callback
-//           → Checks admin status in Cloudant
-//           → Admin: redirect to /admin  |  User: redirect to /dashboard
-//   Logout: Frontend → /api/auth/logout → destroy session → Frontend /
-//   Check:  Frontend → /api/auth/user → { loggedIn: true/false, user }
-//   Role:   Frontend → /api/user-role → { email, isAdmin }
+// Auth flow (Firebase):
+//   Login:  Client-side Firebase Auth → getIdToken() → Authorization: Bearer <token>
+//   Verify: verifyFirebaseToken middleware → admin.auth().verifyIdToken(token)
+//   Role:   GET /api/auth/user → { loggedIn, user, isAdmin }
+// ============================================
 
 require('dotenv').config();
 
@@ -17,7 +15,6 @@ const passport = require('passport');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const { WebAppStrategy } = require('ibmcloud-appid');
 const logger = require('./utils/logger');
 const {
   corsOrigin,
@@ -27,12 +24,10 @@ const {
   joinUrl,
   validateEnvironment,
 } = require('./config/env');
-const { extractUserInfo } = require('./middleware/auth');
+const { verifyFirebaseToken, extractUserInfo } = require('./middleware/auth');
 const { adminCache } = require('./services/cacheService');
-const githubAuthRoutes = require("./routes/githubAuth");
-
-const labsRoutes = require("./routes/labs");
-
+const githubAuthRoutes = require('./routes/githubAuth');
+const labsRoutes = require('./routes/labs');
 const adminRoutes = require('./routes/admin');
 const adminDb = require('./services/adminDb');
 const userRoutes = require('./routes/user');
@@ -62,24 +57,12 @@ validateEnvironment();
 
 const FRONTEND_URL = getFrontendUrl();
 const BACKEND_URL = getBackendUrl();
-const CANONICAL_APPID_CALLBACK_PATH = '/api/auth/callback';
-const LEGACY_APPID_CALLBACK_PATH = '/auth/callback';
-const EXPECTED_APPID_CALLBACK_URL = joinUrl(BACKEND_URL, CANONICAL_APPID_CALLBACK_PATH);
-const CONFIGURED_APPID_CALLBACK_URL = process.env.APPID_REDIRECT_URI || '';
 const EXPECTED_GITHUB_CALLBACK_URL = joinUrl(BACKEND_URL, '/api/github/callback');
 const CONFIGURED_GITHUB_CALLBACK_URL = process.env.GITHUB_CALLBACK_URL || EXPECTED_GITHUB_CALLBACK_URL;
-const hasAppIdCredentials = Boolean(
-  process.env.APPID_TENANT_ID &&
-  process.env.APPID_CLIENT_ID &&
-  process.env.APPID_SECRET &&
-  process.env.APPID_OAUTH_SERVER_URL &&
-  process.env.APPID_REDIRECT_URI
-);
 
 function logMountedRoutes() {
   [
     ['Auth', '/api/auth'],
-    ['Auth legacy aliases', '/auth'],
     ['GitHub OAuth', '/api/github'],
     ['Labs', '/api/labs'],
     ['User', '/api/user'],
@@ -98,26 +81,6 @@ function logMountedRoutes() {
 
   logger.info('[ROUTES] Health mounted at /');
   logger.info('[ROUTES] Health mounted at /api/health');
-  logger.info(`[ROUTES] IBM App ID callback mounted at ${CANONICAL_APPID_CALLBACK_PATH}`);
-  logger.info(`[ROUTES] IBM App ID legacy callback mounted at ${LEGACY_APPID_CALLBACK_PATH}`);
-
-  if (CONFIGURED_APPID_CALLBACK_URL) {
-    logger.info('[APPID][CALLBACK] IBM App ID redirect URI configured at ' + CONFIGURED_APPID_CALLBACK_URL);
-  }
-
-  if (EXPECTED_APPID_CALLBACK_URL && CONFIGURED_APPID_CALLBACK_URL !== EXPECTED_APPID_CALLBACK_URL) {
-    const configuredPath = (() => {
-      try { return new URL(CONFIGURED_APPID_CALLBACK_URL).pathname.replace(/\/+$/, '') || '/'; }
-      catch { return null; }
-    })();
-    const usesLegacyRoute = configuredPath === LEGACY_APPID_CALLBACK_PATH;
-    logger.warn('[APPID][CALLBACK] APPID_REDIRECT_URI differs from canonical backend callback', {
-      expected: EXPECTED_APPID_CALLBACK_URL,
-      configured: CONFIGURED_APPID_CALLBACK_URL,
-      routeExists: configuredPath === CANONICAL_APPID_CALLBACK_PATH || usesLegacyRoute,
-      legacyRoute: usesLegacyRoute,
-    });
-  }
 
   if (CONFIGURED_GITHUB_CALLBACK_URL) {
     logger.info('[ROUTES] GitHub OAuth callback at ' + CONFIGURED_GITHUB_CALLBACK_URL);
@@ -165,7 +128,7 @@ io.on('connection', (socket) => {
   socket.on('register', (payload) => {
     const rawUserId = typeof payload === 'string'
       ? payload
-      : (payload && typeof payload === 'object' ? (payload.sub || payload.userId) : null);
+      : (payload && typeof payload === 'object' ? (payload.uid || payload.sub || payload.userId) : null);
     const userId = normalizeSocketUserId(rawUserId);
     if (!userId) {
       socket.emit('socket_error', { code: 'invalid_register', message: 'Invalid socket registration payload.' });
@@ -183,7 +146,6 @@ io.on('connection', (socket) => {
 
     const existingSocketId = userSockets.get(userId);
     if (existingSocketId && existingSocketId !== socket.id) {
-      // Duplicate socket prevention: keep the latest connection only
       try {
         const existingSocket = io.sockets.sockets.get(existingSocketId);
         if (existingSocket) {
@@ -215,20 +177,19 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Phase 4: discussion sockets (channels/messages/presence)
-  attachDiscussionSocketHandlers({ io, socket, cloudant: require('./services/cloudantClient') });
+  // Discussion sockets (channels/messages/presence) — firestoreClient used internally
+  attachDiscussionSocketHandlers({ io, socket });
   attachWhiteboardSocketHandlers({ io, socket });
 });
 
 // ─────────────────────────────────────────────
 // 1. Security
 // ─────────────────────────────────────────────
-// Trust proxy is required for Render/Heroku to properly handle HTTPS and secure cookies
 app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 
 // ─────────────────────────────────────────────
-// 2. CORS — frontend origin + cookies
+// 2. CORS — frontend origin + credentials
 // ─────────────────────────────────────────────
 app.use(cors({
   origin: corsOrigin,
@@ -238,7 +199,15 @@ app.use(cors({
 }));
 
 // ─────────────────────────────────────────────
-// 3. Parsing & Logging
+// 3. Firebase token verification (global)
+// Reads Authorization: Bearer <token> on every request.
+// Sets req.firebaseUser if valid — routes can check this.
+// Routes without auth simply ignore req.firebaseUser.
+// ─────────────────────────────────────────────
+app.use(verifyFirebaseToken);
+
+// ─────────────────────────────────────────────
+// 4. Parsing & Logging
 // ─────────────────────────────────────────────
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: process.env.FORM_BODY_LIMIT || '1mb' }));
@@ -275,7 +244,10 @@ app.use(morgan(':method :url :status :response-time ms', {
 }));
 
 // ─────────────────────────────────────────────
-// 4. Session — MUST be before Passport
+// 5. Session — for GitHub OAuth only
+// GitHub OAuth uses the passport-github2 strategy which needs
+// a session to persist the OAuth state between /login and /callback.
+// Firebase Auth routes do NOT use sessions.
 // ─────────────────────────────────────────────
 app.use(session({
   name: 'connect.sid',
@@ -284,287 +256,24 @@ app.use(session({
   saveUninitialized: false,
   proxy: isProduction,
   cookie: {
-    secure: isProduction,         // true for Render (HTTPS)
-    httpOnly: true,               // JS cannot access cookie
-    maxAge: 24 * 60 * 60 * 1000,  // 24 hours
-    sameSite: isProduction ? 'none' : 'lax', // 'none' required for cross-domain cookies on Render
+    secure: isProduction,
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    sameSite: isProduction ? 'none' : 'lax',
   },
 }));
 
 // ─────────────────────────────────────────────
-// 5. Passport — MUST be after Session
+// 6. Passport — for GitHub OAuth (Labs) only
 // ─────────────────────────────────────────────
 app.use(passport.initialize());
 app.use(passport.session());
-//____________________________________________________________________________________________________________________________
-//github authroutes
-app.use("/api/github", githubAuthRoutes);
 
-app.use("/api/labs", labsRoutes);
-
-// IBM App ID strategy
-if (hasAppIdCredentials) {
-  passport.use(new WebAppStrategy({
-    tenantId: process.env.APPID_TENANT_ID,
-    clientId: process.env.APPID_CLIENT_ID,
-    secret: process.env.APPID_SECRET,
-    oauthServerUrl: process.env.APPID_OAUTH_SERVER_URL,
-    redirectUri: process.env.APPID_REDIRECT_URI,
-  }));
-} else {
-  logger.warn('[AUTH] IBM App ID credentials are missing. Authentication routes will return a 503 until configured.');
-}
-
-// Store entire user object in session
-passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((user, done) => done(null, user));
-
-function logLegacySessionCheck(req, route) {
-  const authenticated = req.isAuthenticated ? req.isAuthenticated() : false;
-  logger.info('[AUTH][SESSION] Session check', {
-    route,
-    authenticated,
-    hasSession: Boolean(req.session),
-    hasPassportSession: Boolean(req.session?.passport),
-    hasUser: Boolean(req.user),
-    hasCookieHeader: Boolean(req.headers?.cookie),
-    origin: req.get('origin') || null,
-    legacyRoute: true,
-  });
-  return authenticated;
-}
-
-// ═════════════════════════════════════════════
-//              AUTH ROUTES
-// ═════════════════════════════════════════════
-
-/**
- * GET /auth/login
- * Step 1: Frontend sends user here
- * Step 2: Redirect to IBM App ID for authentication
- */
-app.get('/auth/login', (req, res, next) => {
-  if (!hasAppIdCredentials) {
-    return res.status(503).send('Authentication is not configured on this backend instance.');
-  }
-
-  logger.info('[AUTH][APPID] Login start', {
-    path: req.originalUrl,
-    callbackUrl: process.env.APPID_REDIRECT_URI,
-    legacyRoute: true,
-  });
-
-  return passport.authenticate(WebAppStrategy.STRATEGY_NAME)(req, res, next);
-});
-
-/**
- * GET /auth/callback
- * Step 3: IBM App ID redirects here after user logs in
- * Step 4: Passport processes the auth code, creates session
- * Step 5: MUST redirect to frontend dashboard
- *
- * ⚠️ THIS IS THE MOST CRITICAL ROUTE
- * Without the res.redirect(), user gets stuck on App ID page
- */
-app.get('/auth/callback', (req, res, next) => {
-  if (!hasAppIdCredentials) {
-    return res.status(503).send('Authentication is not configured on this backend instance.');
-  }
-
-  logger.info('[AUTH][CALLBACK] Callback hit', { path: req.originalUrl, legacyRoute: true });
-
-  passport.authenticate(WebAppStrategy.STRATEGY_NAME, (err, user, info) => {
-    // Handle authentication errors
-    if (err) {
-      logger.error('[AUTH] Callback error:', err.message || err);
-      return res.redirect(FRONTEND_URL + '/?error=auth_error');
-    }
-
-    // Handle authentication failure (no user returned)
-    if (!user) {
-      logger.warn('[AUTH] Authentication failed.', info);
-      return res.redirect(FRONTEND_URL + '/?error=auth_failed');
-    }
-
-    // Log the user into the session
-    req.logIn(user, async (loginErr) => {
-      if (loginErr) {
-        logger.error('[AUTH] Session login error:', loginErr.message || loginErr);
-        return res.redirect(FRONTEND_URL + '/?error=session_error');
-      }
-
-      // ✅ SUCCESS — check admin role BEFORE redirecting
-      const email = (user.email || (user.emails && user.emails[0]?.value) || '').toLowerCase();
-      logger.info('[AUTH] Login successful:', user.name || email || 'Unknown');
-      logger.info('[AUTH][CALLBACK] Session created', { legacyRoute: true });
-
-      if (req.session && typeof req.session.save === 'function') {
-        try {
-          await new Promise((resolve, reject) => {
-            req.session.save((saveErr) => saveErr ? reject(saveErr) : resolve());
-          });
-        } catch (saveErr) {
-          logger.error('[AUTH][CALLBACK] Session save error:', saveErr.message || saveErr);
-          return res.redirect(FRONTEND_URL + '/?error=session_error');
-        }
-      }
-
-      try {
-        const isAdmin = await adminDb.checkIsAdmin(email);
-        const redirectPath = isAdmin ? '/admin' : '/dashboard';
-        logger.info('[AUTH][CALLBACK] Redirect target', { target: FRONTEND_URL + redirectPath, legacyRoute: true });
-        logger.info(`[AUTH] User is ${isAdmin ? 'ADMIN' : 'USER'}; redirecting to ${FRONTEND_URL}${redirectPath}`);
-        return res.redirect(FRONTEND_URL + redirectPath);
-      } catch (adminErr) {
-        logger.error('[AUTH] Admin check failed, defaulting to /dashboard:', adminErr.message);
-        logger.info('[AUTH][CALLBACK] Redirect target', { target: FRONTEND_URL + '/dashboard', legacyRoute: true });
-        return res.redirect(FRONTEND_URL + '/dashboard');
-      }
-    });
-  })(req, res, next);
-});
-
-/**
- * GET /auth/logout
- * Step 1: Frontend sends user here
- * Step 2: Destroy session, clear cookies
- * Step 3: Redirect to frontend landing page
- *
- * The frontend does NOT clear its state manually.
- * When landing page loads, AuthContext calls /auth/user → gets loggedIn:false → UI updates.
- */
-app.get('/auth/logout', (req, res, next) => {
-  logger.info('[AUTH] Logout requested');
-
-  // Clear IBM App ID tokens from session
-  if (hasAppIdCredentials) {
-    try { WebAppStrategy.logout(req); } catch (e) { /* ignore */ }
-  }
-
-  // Passport v0.6+ requires callback
-  req.logout(function (err) {
-    if (err) {
-      logger.error('[AUTH] Passport logout error:', err);
-      return next(err);
-    }
-
-    // Destroy the entire session
-    req.session.destroy((destroyErr) => {
-      if (destroyErr) {
-        logger.error('[AUTH] Session destroy error:', destroyErr);
-      }
-
-      // Clear the session cookie from browser
-      res.clearCookie('connect.sid');
-
-      // ✅ Redirect to frontend landing page
-      logger.info('[AUTH] Logged out. Redirecting to:', FRONTEND_URL);
-      return res.redirect(FRONTEND_URL);
-    });
-  });
-});
-
-/**
- * GET /auth/user
- * Called by frontend on EVERY page load to check session
- * Returns { loggedIn: true/false, user: {...} }
- *
- * This is what keeps frontend and backend IN SYNC.
- * NEVER returns 401 — always returns JSON so frontend can handle it.
- */
-app.get('/auth/user', async (req, res) => {
-  // Check if user has an active session
-  if (!logLegacySessionCheck(req, '/auth/user')) {
-    return res.json({
-      loggedIn: false,
-      success: false,
-      user: null,
-    });
-  }
-
-  const user = req.user;
-  const roles = extractRoles(user);
-  const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
-  const { userId } = extractUserInfo(user);
-
-  // Sync user to database (creates them if they don't exist, updates lastLogin)
-  try {
-    const db = require('./utils/db');
-    db.syncUser(user);
-  } catch (e) { /* non-fatal */ }
-
-  // Async admin check against Cloudant
-  let isAdmin = false;
-  try {
-    isAdmin = await adminDb.checkIsAdmin(email);
-  } catch (e) {
-    logger.error('[AUTH] /auth/user admin check error:', e.message);
-  }
-
-  return res.json({
-    loggedIn: true,
-    success: true,
-    user: {
-      userId: userId || null,
-      sub: userId || null,
-      name: user.name || user.given_name || 'User',
-      email: email || null,
-      picture: user.picture || null,
-      isAdmin: isAdmin,
-      roles: roles,
-    },
-  });
-});
-
-/**
- * GET /auth/status
- * Quick auth check (lightweight, no user data)
- */
-app.get('/auth/status', async (req, res) => {
-  const authenticated = req.isAuthenticated ? req.isAuthenticated() : false;
-  let isAdmin = false;
-  if (authenticated && req.user) {
-    try {
-      const email = (req.user.email || req.user.emails?.[0]?.value || '').toLowerCase();
-      isAdmin = await adminDb.checkIsAdmin(email);
-    } catch (e) { /* ignore */ }
-  }
-  res.json({ authenticated, isAdmin });
-});
-
-/**
- * GET /debug-user
- * Debug only — shows raw user object and role locations
- */
-app.get('/debug-user', async (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(404).json({ success: false, error: 'Not Found' });
-  }
-
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
-    return res.json({
-      loggedIn: false,
-      message: 'Not logged in. Start authentication at /auth/login first.',
-    });
-  }
-  const user = req.user;
-  const roles = extractRoles(user);
-  const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
-
-  // Sync user here too just in case
-  try { const db = require('./utils/db'); db.syncUser(user); } catch (e) { }
-
-  let isAdmin = false;
-  try { isAdmin = await adminDb.checkIsAdmin(email); } catch (e) { }
-
-  res.json({
-    loggedIn: true,
-    email,
-    extractedRoles: roles,
-    isAdmin,
-    rawUser: user,
-  });
-});
+// ─────────────────────────────────────────────
+// GitHub OAuth routes (Labs / Codespaces)
+// ─────────────────────────────────────────────
+app.use('/api/github', githubAuthRoutes);
+app.use('/api/labs', labsRoutes);
 
 // ─────────────────────────────────────────────
 // Health Check
@@ -573,6 +282,8 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'CloudIQ backend running',
+    auth: 'Firebase Auth',
+    database: 'Firestore',
   });
 });
 
@@ -616,24 +327,25 @@ app.get('/api/debug/firestore', async (req, res) => {
 });
 
 // ═════════════════════════════════════════════
-//              ROLE + ADMIN MANAGEMENT APIs
+//              LEGACY INLINE ADMIN APIs
+// Kept for backward compat. The /api/admin/* routes
+// in routes/admin.js are the canonical endpoints.
 // ═════════════════════════════════════════════
 
 /**
  * GET /api/user-role
- * Verifies session and returns the user's email + isAdmin status.
- * Frontend calls this AFTER login to decide which dashboard to show.
+ * Returns the user's email + isAdmin status.
+ * Frontend calls this after login to decide which dashboard to show.
  */
 app.get('/api/user-role', async (req, res) => {
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
+  if (!req.firebaseUser) {
     return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
   }
 
-  const user = req.user;
-  const email = (user.email || user.emails?.[0]?.value || '').toLowerCase();
+  const { email } = extractUserInfo(req);
 
   if (!email) {
-    return res.status(400).json({ success: false, error: 'No email found in session.' });
+    return res.status(400).json({ success: false, error: 'No email found in token.' });
   }
 
   try {
@@ -648,22 +360,17 @@ app.get('/api/user-role', async (req, res) => {
 
 /**
  * POST /api/add-admin
- * Adds a new admin email to the Cloudant 'admins' database.
- * ONLY the super admin (ADMIN_EMAILS env var) can call this.
- *
+ * Adds a new admin. Only the super admin can call this.
  * Body: { "newAdminEmail": "admin@example.com" }
  */
 app.post('/api/add-admin', async (req, res) => {
   try {
-    if (!req.isAuthenticated || !req.isAuthenticated()) {
+    if (!req.firebaseUser) {
       return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
     }
 
-    const callerEmail = (
-      req.user.email || req.user.emails?.[0]?.value || ''
-    ).toLowerCase();
+    const { email: callerEmail } = extractUserInfo(req);
 
-    // Only the super admin can add other admins
     if (!adminDb.isSuperAdmin(callerEmail)) {
       logger.warn(`[API] /api/add-admin: Non-super-admin attempt by ${callerEmail}`);
       return res.status(403).json({
@@ -689,20 +396,16 @@ app.post('/api/add-admin', async (req, res) => {
 
 /**
  * DELETE /api/remove-admin
- * Removes an admin email from the Cloudant 'admins' database.
- * ONLY the super admin can call this.
- *
+ * Removes an admin email. Only the super admin can call this.
  * Body: { "adminEmail": "admin@example.com" }
  */
 app.delete('/api/remove-admin', async (req, res) => {
   try {
-    if (!req.isAuthenticated || !req.isAuthenticated()) {
+    if (!req.firebaseUser) {
       return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
     }
 
-    const callerEmail = (
-      req.user.email || req.user.emails?.[0]?.value || ''
-    ).toLowerCase();
+    const { email: callerEmail } = extractUserInfo(req);
 
     if (!adminDb.isSuperAdmin(callerEmail)) {
       return res.status(403).json({
@@ -728,17 +431,14 @@ app.delete('/api/remove-admin', async (req, res) => {
 
 /**
  * GET /api/list-admins
- * Returns a list of all admins (super admin + Cloudant admins).
- * ONLY accessible by the super admin.
+ * Returns all admins. Only accessible by the super admin.
  */
 app.get('/api/list-admins', async (req, res) => {
-  if (!req.isAuthenticated || !req.isAuthenticated()) {
+  if (!req.firebaseUser) {
     return res.status(401).json({ success: false, error: 'Unauthorized', message: 'Not logged in.' });
   }
 
-  const callerEmail = (
-    req.user.email || req.user.emails?.[0]?.value || ''
-  ).toLowerCase();
+  const { email: callerEmail } = extractUserInfo(req);
 
   if (!adminDb.isSuperAdmin(callerEmail)) {
     return res.status(403).json({
@@ -801,46 +501,14 @@ app.use((err, req, res, next) => {
 });
 
 // ─────────────────────────────────────────────
-// Role Extraction Helper
-// ─────────────────────────────────────────────
-function extractRoles(user) {
-  if (!user) return [];
-  const rolesSet = new Set();
-
-  // _json.roles — where App ID puts roles when "Add roles to ID token" is enabled
-  if (user._json && Array.isArray(user._json.roles)) {
-    user._json.roles.forEach((r) => rolesSet.add(r));
-  }
-  // Direct roles array
-  if (Array.isArray(user.roles)) {
-    user.roles.forEach((r) => rolesSet.add(r));
-  }
-  // Identity token decode
-  if (user.identityToken) {
-    try {
-      const p = JSON.parse(Buffer.from(user.identityToken.split('.')[1], 'base64').toString());
-      if (Array.isArray(p.roles)) p.roles.forEach((r) => rolesSet.add(r));
-    } catch (e) { /* skip */ }
-  }
-  // Attributes
-  if (user.attributes?.role) rolesSet.add(user.attributes.role);
-
-  return Array.from(rolesSet);
-}
-
-// ─────────────────────────────────────────────
 // Start Server
 // ─────────────────────────────────────────────
 server.listen(PORT, () => {
   logger.info(`[SERVER] Running on port ${PORT}`);
   logger.info(`[SERVER] Frontend origin ${FRONTEND_URL}`);
+  logger.info('[AUTH] Firebase Auth active — JWT Bearer token verification enabled');
+  logger.info('[DB] Firestore active — Cloudant removed');
   logMountedRoutes();
-  if (hasAppIdCredentials) {
-    logger.info('[AUTH] IBM App ID ready');
-    logger.debug('[AUTH] App ID callback URL:', process.env.APPID_REDIRECT_URI);
-  } else {
-    logger.warn('[AUTH] IBM App ID is disabled until the required environment variables are provided.');
-  }
   logger.info('[SOCKET] Ready');
 
   startLabCleanupService();

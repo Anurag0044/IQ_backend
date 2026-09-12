@@ -1,6 +1,6 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const cloudant = require('../services/cloudantClient');
+const db = require('../services/firestoreClient');
 const { resolveSenderInfo, createNotification } = require('../services/notificationService');
 const { ensureAuthenticated, extractUserInfo, checkAdminRole } = require('../middleware/auth');
 
@@ -10,7 +10,7 @@ const DB = 'comments';
 async function isCommunityModerator(userId, communityId) {
   if (!userId || !communityId) return false;
   try {
-    const community = (await cloudant.getDocument({ db: 'communities', docId: communityId })).result;
+    const community = await db.getDoc('communities', communityId);
     if (community.owner_id === userId) return true;
     if (Array.isArray(community.co_admin_ids) && community.co_admin_ids.includes(userId)) return true;
   } catch (err) {
@@ -23,7 +23,6 @@ async function isCommunityModerator(userId, communityId) {
 
 // ─────────────────────────────────────────────
 // POST /api/comments/create
-// Auth required — creates a comment or reply
 // ─────────────────────────────────────────────
 router.post('/create', ensureAuthenticated, async (req, res) => {
   try {
@@ -33,10 +32,9 @@ router.post('/create', ensureAuthenticated, async (req, res) => {
       return res.status(400).json({ success: false, error: 'post_id and content are required' });
     }
 
-    const { userId, username, email } = extractUserInfo(req.user);
+    const { userId, username, email } = extractUserInfo(req);
 
     const newComment = {
-      _id: uuidv4(),
       post_id,
       user_id: userId,
       username,
@@ -46,88 +44,80 @@ router.post('/create', ensureAuthenticated, async (req, res) => {
       created_at: new Date().toISOString(),
     };
 
-    const response = await cloudant.postDocument({
-      db: DB,
-      document: newComment,
-    });
+    const id = uuidv4();
+    await db.setDoc(DB, id, newComment);
+    newComment._id = id;
 
-    if (response.result.ok) {
-      const io = req.app.get('io');
-      if (io) {
-        io.to(`post:${post_id}`).emit('comment_created', { ...newComment, replies: [] });
-      }
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`post:${post_id}`).emit('comment_created', { ...newComment, replies: [] });
+    }
+
+    try {
+      const { senderName, senderAvatar } = await resolveSenderInfo(
+        userId,
+        username,
+        req.firebaseUser?.picture || null
+      );
+
+      let postAuthorId = null;
 
       try {
-        const { senderName, senderAvatar } = await resolveSenderInfo(
-          cloudant,
-          userId,
-          username,
-          req.user?.picture || null
-        );
-
-        let postAuthorId = null;
-
-        try {
-          const postDoc = (await cloudant.getDocument({ db: 'posts', docId: post_id })).result;
-          postAuthorId = postDoc.user_id || null;
-        } catch (err) {
-          if (err.status !== 404) {
-            console.warn('[COMMENTS] Post fetch error for notification:', err.message);
-          }
+        const postDoc = await db.getDoc('posts', post_id);
+        postAuthorId = postDoc.user_id || null;
+      } catch (err) {
+        if (err.status !== 404) {
+          console.warn('[COMMENTS] Post fetch error for notification:', err.message);
         }
-
-        if (postAuthorId && postAuthorId !== userId) {
-          await createNotification({
-            cloudant,
-            io: req.app.get('io'),
-            userSockets: req.app.get('userSockets'),
-            recipientId: postAuthorId,
-            senderId: userId,
-            senderName,
-            senderAvatar,
-            type: 'post_reply',
-            message: `${senderName} replied to your post`,
-            postId: post_id,
-            commentId: newComment._id,
-            targetType: 'post',
-            targetId: post_id,
-          });
-        }
-
-        if (parent_id) {
-          try {
-            const parent = (await cloudant.getDocument({ db: DB, docId: parent_id })).result;
-            if (parent?.user_id && parent.user_id !== userId && parent.user_id !== postAuthorId) {
-              await createNotification({
-                cloudant,
-                io: req.app.get('io'),
-                userSockets: req.app.get('userSockets'),
-                recipientId: parent.user_id,
-                senderId: userId,
-                senderName,
-                senderAvatar,
-                type: 'comment_reply',
-                message: `${senderName} replied to your comment`,
-                postId: post_id,
-                commentId: newComment._id,
-                targetType: 'comment',
-                targetId: parent_id,
-              });
-            }
-          } catch (err) {
-            if (err.status !== 404) {
-              console.warn('[COMMENTS] Parent fetch error for notification:', err.message);
-            }
-          }
-        }
-      } catch (notifErr) {
-        console.error('[COMMENTS] Notification create error:', notifErr.message);
       }
 
-      res.json({ success: true, comment: newComment });
-    } else {
-      res.status(500).json({ success: false, error: 'Failed to create comment' });
+      if (postAuthorId && postAuthorId !== userId) {
+        await createNotification({
+          io: req.app.get('io'),
+          userSockets: req.app.get('userSockets'),
+          recipientId: postAuthorId,
+          senderId: userId,
+          senderName,
+          senderAvatar,
+          type: 'post_reply',
+          message: `${senderName} replied to your post`,
+          postId: post_id,
+          commentId: newComment._id,
+          targetType: 'post',
+          targetId: post_id,
+        });
+      }
+
+      if (parent_id) {
+        try {
+          const parent = await db.getDoc(DB, parent_id);
+          if (parent?.user_id && parent.user_id !== userId && parent.user_id !== postAuthorId) {
+            await createNotification({
+              io: req.app.get('io'),
+              userSockets: req.app.get('userSockets'),
+              recipientId: parent.user_id,
+              senderId: userId,
+              senderName,
+              senderAvatar,
+              type: 'comment_reply',
+              message: `${senderName} replied to your comment`,
+              postId: post_id,
+              commentId: newComment._id,
+              targetType: 'comment',
+              targetId: parent_id,
+            });
+          }
+        } catch (err) {
+          if (err.status !== 404) {
+            console.warn('[COMMENTS] Parent fetch error for notification:', err.message);
+          }
+        }
+      }
+    } catch (notifErr) {
+      console.error('[COMMENTS] Notification create error:', notifErr.message);
     }
+
+    res.json({ success: true, comment: newComment });
   } catch (err) {
     console.error('[COMMENTS] Create error:', err.message);
     res.status(500).json({ success: false, error: 'Failed to create comment' });
@@ -136,39 +126,14 @@ router.post('/create', ensureAuthenticated, async (req, res) => {
 
 // ─────────────────────────────────────────────
 // GET /api/comments/:post_id
-// Public — Returns comments nested with replies
 // ─────────────────────────────────────────────
 router.get('/:post_id', async (req, res) => {
   try {
     const postId = req.params.post_id;
 
-    let response;
-    try {
-      response = await cloudant.postView({
-        db: DB,
-        ddoc: 'comments',
-        view: 'by_post',
-        key: postId,
-        includeDocs: true,
-      });
-    } catch (viewErr) {
-      console.warn('[COMMENTS] View query failed, falling back to Mango find:', viewErr.message);
-      response = await cloudant.postFind({
-        db: DB,
-        selector: { post_id: postId }
-      });
-    }
-
-    // Handle both postView and postFind response structures
-    const isView = response.result.rows !== undefined;
-    let docs = isView 
-      ? response.result.rows.map(r => r.doc).filter(doc => doc)
-      : response.result.docs;
-
-    // Sort chronologically
+    const docs = await db.queryDocs(DB, [['post_id', '==', postId]]);
     docs.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
-    // Build the nested structure
     const commentMap = {};
     const rootComments = [];
 
@@ -194,16 +159,15 @@ router.get('/:post_id', async (req, res) => {
 
 // ─────────────────────────────────────────────
 // DELETE /api/comments/:id
-// Auth required — owner or moderator can delete
 // ─────────────────────────────────────────────
 router.delete('/:id', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
-    const isAdmin = await checkAdminRole(req.user);
+    const { userId } = extractUserInfo(req);
+    const isAdmin = await checkAdminRole(req);
 
     let comment;
     try {
-      comment = (await cloudant.getDocument({ db: DB, docId: req.params.id })).result;
+      comment = await db.getDoc(DB, req.params.id);
     } catch (err) {
       if (err.status === 404) return res.status(404).json({ success: false, error: 'Comment not found' });
       throw err;
@@ -213,7 +177,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
 
     if (!canDelete && comment.post_id) {
       try {
-        const post = (await cloudant.getDocument({ db: 'posts', docId: comment.post_id })).result;
+        const post = await db.getDoc('posts', comment.post_id);
         if (post.user_id === userId) {
           canDelete = true;
         } else if (post.community_id) {
@@ -231,7 +195,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Not authorized to delete this comment' });
     }
 
-    await cloudant.deleteDocument({ db: DB, docId: comment._id, rev: comment._rev });
+    await db.deleteDoc(DB, comment._id);
     return res.json({ success: true, message: 'Comment deleted' });
   } catch (err) {
     console.error('[COMMENTS] Delete error:', err.message);

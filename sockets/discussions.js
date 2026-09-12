@@ -8,6 +8,7 @@ const { v4: uuidv4 } = require('uuid');
 const { extractUserInfo, checkAdminRoleSync } = require('../middleware/auth');
 const { communityCache, membershipCache } = require('../services/cacheService');
 const firebaseService = require('../services/firebaseService');
+const db = require('../services/firestoreClient');
 const logger = require('../utils/logger');
 
 const DB_COMMUNITIES = 'communities';
@@ -21,68 +22,61 @@ function getUserAvatarFromSocket(socket) {
   return socket.data.picture || socket.data.profile_image_url || socket.data.avatar || null;
 }
 
-async function getDocOrNull(cloudant, db, docId) {
+async function getDocOrNull(collection, docId) {
   try {
-    return (await cloudant.getDocument({ db, docId })).result;
+    return await db.getDoc(collection, docId);
   } catch (err) {
     if (err.status === 404) return null;
     throw err;
   }
 }
 
-async function getCachedCommunity(cloudant, communityId) {
+async function getCachedCommunity(communityId) {
   const cacheKey = `comm:${communityId}`;
   const cached = communityCache.get(cacheKey);
   if (cached) return cached;
 
-  const doc = await getDocOrNull(cloudant, DB_COMMUNITIES, communityId);
+  const doc = await getDocOrNull(DB_COMMUNITIES, communityId);
   if (doc) communityCache.set(cacheKey, doc);
   return doc;
 }
 
-async function isCommunityMember(cloudant, userId, community) {
+async function isCommunityMember(userId, community) {
   if (!userId || !community) return false;
   if (Array.isArray(community.members) && community.members.includes(userId)) {
     logger.debug('[FIREBASE] member validated');
     return true;
   }
 
-  const cacheKey = `mem:${userId}:${community._id}`;
+  const communityId = community._id || community.id;
+  const cacheKey = `mem:${userId}:${communityId}`;
   const cached = membershipCache.get(cacheKey);
   if (cached === true) {
     logger.debug('[FIREBASE] member validated');
     return true;
   }
 
+  // Check Firestore membership document (communityId_userId pattern)
   try {
-    const res = await cloudant.postView({
-      db: DB_MEMBERSHIPS,
-      ddoc: 'community_memberships',
-      view: 'by_community',
-      key: [community._id, userId],
-      limit: 1,
-    });
-    const isMember = (res.result.rows || []).length > 0;
-    membershipCache.set(cacheKey, isMember);
-    if (isMember) logger.debug('[FIREBASE] member validated');
-    return isMember;
+    const membershipId = `${communityId}_${userId}`;
+    const membership = await getDocOrNull(DB_MEMBERSHIPS, membershipId);
+    if (membership) {
+      membershipCache.set(cacheKey, true);
+      logger.debug('[FIREBASE] member validated');
+      return true;
+    }
   } catch (err) {
     logger.warn('[SOCKET][DISCUSSIONS] Membership lookup failed:', err.message);
   }
 
+  // Fallback: query by user_id + community_id
   try {
-    const fallback = await cloudant.postFind({
-      db: DB_MEMBERSHIPS,
-      selector: {
-        $and: [
-          { $or: [{ community_id: community._id }, { communityId: community._id }] },
-          { $or: [{ user_id: userId }, { userId }] },
-        ],
-      },
-      limit: 1,
-      fields: ['_id'],
-    });
-    const isMember = (fallback.result.docs || []).length > 0;
+    const results = await db.queryDocs(
+      DB_MEMBERSHIPS,
+      [['community_id', '==', communityId], ['user_id', '==', userId]],
+      null, 'asc', 1
+    );
+    const isMember = results.length > 0;
     if (isMember) {
       membershipCache.set(cacheKey, true);
       logger.debug('[FIREBASE] member validated');
@@ -125,7 +119,7 @@ function normalizeSocketText(value, maxLength = 4000) {
   return value.trim().slice(0, maxLength);
 }
 
-async function authorizeChannel({ cloudant, socket, channelId }) {
+async function authorizeChannel({ socket, channelId }) {
   const userId = socket.data.userId;
   if (!userId || !channelId) {
     return { ok: false, code: 'invalid_channel', message: 'Missing user or channel id' };
@@ -136,13 +130,13 @@ async function authorizeChannel({ cloudant, socket, channelId }) {
     return { ok: false, code: 'channel_not_found', message: 'Channel not found', extra: { channel_id: channelId } };
   }
 
-  const community = await getCachedCommunity(cloudant, channel.community_id || channel.communityId);
+  const community = await getCachedCommunity(channel.community_id || channel.communityId);
   if (!community) {
     return { ok: false, code: 'community_not_found', message: 'Community not found', extra: { community_id: channel.community_id || channel.communityId } };
   }
 
   const isAdmin = checkAdminRoleSync({ email: socket.data.email });
-  const member = await isCommunityMember(cloudant, userId, community);
+  const member = await isCommunityMember(userId, community);
   if (!member && !isAdmin) {
     return { ok: false, code: 'channel_forbidden', message: 'You must be a community member to join this channel', extra: { channel_id: channelId } };
   }
@@ -160,7 +154,7 @@ async function authorizeChannel({ cloudant, socket, channelId }) {
   return { ok: true, userId, channel, community };
 }
 
-function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
+function attachDiscussionSocketHandlers({ io, socket }) {
   socket.data.discussionCommunities = new Set();
 
   socket.on('join_community_discussions', async (payload = {}) => {
@@ -172,14 +166,14 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
         return;
       }
 
-      const community = await getCachedCommunity(cloudant, community_id);
+      const community = await getCachedCommunity(community_id);
       if (!community) {
         emitDiscussionError(socket, 'community_not_found', 'Community not found', { community_id });
         return;
       }
 
       const isAdmin = checkAdminRoleSync({ email: socket.data.email });
-      const member = await isCommunityMember(cloudant, userId, community);
+      const member = await isCommunityMember(userId, community);
       if (!member && !isAdmin) {
         emitDiscussionError(socket, 'community_forbidden', 'You must be a community member to join discussions', { community_id });
         return;
@@ -207,7 +201,7 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
   socket.on('join_channel', async (payload = {}) => {
     try {
       const channel_id = normalizeSocketId(payload?.channel_id);
-      const auth = await authorizeChannel({ cloudant, socket, channelId: channel_id });
+      const auth = await authorizeChannel({ socket, channelId: channel_id });
       if (!auth.ok) {
         emitDiscussionError(socket, auth.code, auth.message, auth.extra || {});
         return;
@@ -257,13 +251,13 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
       const client_temp_id = normalizeSocketId(payload?.client_temp_id, 120);
       if (!content) return;
 
-      const auth = await authorizeChannel({ cloudant, socket, channelId: channel_id });
+      const auth = await authorizeChannel({ socket, channelId: channel_id });
       if (!auth.ok) {
         emitDiscussionError(socket, auth.code, auth.message, auth.extra || {});
         return;
       }
 
-      const { username } = extractUserInfo({ name: socket.data.username, sub: auth.userId, email: socket.data.email });
+      const { username } = extractUserInfo({ firebaseUser: { uid: auth.userId, email: socket.data.email, name: socket.data.username } });
       const messageDoc = {
         _id: uuidv4(),
         channel_id: auth.channel._id || auth.channel.id,
@@ -309,7 +303,7 @@ function attachDiscussionSocketHandlers({ io, socket, cloudant }) {
       const message = await firebaseService.getDocument('messages', message_id);
       if (!message) return;
 
-      const auth = await authorizeChannel({ cloudant, socket, channelId: message.channel_id || message.channelId });
+      const auth = await authorizeChannel({ socket, channelId: message.channel_id || message.channelId });
       if (!auth.ok) return;
 
       await firebaseService.setReaction({

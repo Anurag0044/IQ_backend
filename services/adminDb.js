@@ -1,19 +1,19 @@
-﻿// ============================================
+// ============================================
 // CloudIQ Backend - Admin Database Service
 // ============================================
-// Manages the 'admins' Cloudant database.
+// Manages the 'admins' Firestore database.
 // Super admin (main_admin) defined in ADMIN_EMAILS env var.
-// All other admins stored in Cloudant with their role.
+// All other admins stored in Firestore with their role.
 //
 // Role hierarchy (descending authority):
 //   main_admin > co_admin > elder_admin > junior_admin
 
-const cloudant = require('./cloudantClient');
+const db = require('./firestoreClient');
 const logger = require('../utils/logger');
 
 const ADMINS_DB = 'admins';
 
-// â”€â”€â”€ Role hierarchy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Role hierarchy ──────────────────────────────────────────────────────────
 const ROLE_RANK = {
   main_admin:   4,
   co_admin:     3,
@@ -25,27 +25,7 @@ function rankOf(role) {
   return ROLE_RANK[role] ?? 0;
 }
 
-// â”€â”€â”€ DB bootstrapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-async function ensureAdminsDb() {
-  try {
-    await cloudant.getDatabaseInformation({ db: ADMINS_DB });
-    logger.info('[AdminDB] âœ” admins database exists');
-  } catch (err) {
-    if (err.status === 404) {
-      try {
-        await cloudant.putDatabase({ db: ADMINS_DB });
-        logger.info('[AdminDB] âœš admins database created');
-      } catch (createErr) {
-        logger.error('[AdminDB] âœ– Failed to create admins database:', createErr.message);
-      }
-    } else {
-      logger.error('[AdminDB] âœ– Error checking admins database:', err.message);
-    }
-  }
-}
-ensureAdminsDb();
-
-// â”€â”€â”€ Super-admin (env var) helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Super-admin (env var) helpers ───────────────────────────────────────────
 function getSuperAdminEmails() {
   return (process.env.ADMIN_EMAILS || '')
     .split(',')
@@ -58,12 +38,12 @@ function isSuperAdmin(email) {
   return getSuperAdminEmails().includes(email.trim().toLowerCase());
 }
 
-// â”€â”€â”€ Single-admin lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Single-admin lookup ─────────────────────────────────────────────────────
 async function getAdminDoc(email) {
   const id = email.trim().toLowerCase();
   try {
-    const res = await cloudant.getDocument({ db: ADMINS_DB, docId: id });
-    return res.result;
+    const doc = await db.getDoc(ADMINS_DB, id);
+    return doc;
   } catch (err) {
     if (err.status === 404) return null;
     throw err;
@@ -75,7 +55,7 @@ async function isAdminInDb(email) {
   return doc !== null;
 }
 
-// â”€â”€â”€ Authoritative admin check (used by middleware) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Authoritative admin check (used by middleware) ──────────────────────────
 async function checkIsAdmin(email) {
   if (!email) return false;
   const n = email.trim().toLowerCase();
@@ -83,7 +63,7 @@ async function checkIsAdmin(email) {
   return isAdminInDb(n);
 }
 
-// â”€â”€â”€ Get role of any admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Get role of any admin ───────────────────────────────────────────────────
 async function getAdminRole(email) {
   if (!email) return null;
   const n = email.trim().toLowerCase();
@@ -92,7 +72,7 @@ async function getAdminRole(email) {
   return doc ? (doc.role || 'junior_admin') : null;
 }
 
-// â”€â”€â”€ Add admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Add admin ───────────────────────────────────────────────────────────────
 async function addAdmin(newAdminEmail, role = 'junior_admin', addedByEmail) {
   if (!newAdminEmail) return { success: false, message: 'Email is required' };
 
@@ -107,7 +87,7 @@ async function addAdmin(newAdminEmail, role = 'junior_admin', addedByEmail) {
     return { success: false, message: 'This email is the main admin' };
   }
 
-  // Permission check â€” only main_admin and co_admin can add
+  // Permission check — only main_admin and co_admin can add
   if (addedByEmail) {
     const adderRole = await getAdminRole(addedByEmail);
     if (!['main_admin', 'co_admin'].includes(adderRole)) {
@@ -121,26 +101,22 @@ async function addAdmin(newAdminEmail, role = 'junior_admin', addedByEmail) {
   }
 
   try {
-    await cloudant.postDocument({
-      db: ADMINS_DB,
-      document: {
-        _id:        n,
-        email:      n,
-        role,
-        addedBy:    addedByEmail || 'system',
-        created_at: new Date().toISOString(),
-      },
+    await db.setDoc(ADMINS_DB, n, {
+      _id:        n,
+      email:      n,
+      role,
+      addedBy:    addedByEmail || 'system',
+      created_at: new Date().toISOString(),
     });
-    logger.info(`[AdminDB] âœ… Added admin: ${n} as ${role}`);
+    logger.info(`[AdminDB] ✅ Added admin: ${n} as ${role}`);
     return { success: true, message: `${n} added as ${role}` };
   } catch (err) {
-    if (err.status === 409) return { success: false, message: `${n} is already an admin` };
     logger.error('[AdminDB] Error adding admin:', err.message);
     return { success: false, message: 'Failed to add admin: ' + err.message };
   }
 }
 
-// â”€â”€â”€ Remove admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Remove admin ────────────────────────────────────────────────────────────
 async function removeAdmin(adminEmail, removedByEmail) {
   if (!adminEmail) return { success: false, message: 'Email is required' };
 
@@ -172,8 +148,8 @@ async function removeAdmin(adminEmail, removedByEmail) {
   try {
     const doc = await getAdminDoc(n);
     if (!doc) return { success: false, message: `${n} is not in the admin database` };
-    await cloudant.deleteDocument({ db: ADMINS_DB, docId: n, rev: doc._rev });
-    logger.info(`[AdminDB] âœ… Removed admin: ${n}`);
+    await db.deleteDoc(ADMINS_DB, n);
+    logger.info(`[AdminDB] ✅ Removed admin: ${n}`);
     return { success: true, message: `${n} removed from admins` };
   } catch (err) {
     logger.error('[AdminDB] Error removing admin:', err.message);
@@ -181,7 +157,7 @@ async function removeAdmin(adminEmail, removedByEmail) {
   }
 }
 
-// â”€â”€â”€ Update role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Update role ─────────────────────────────────────────────────────────────
 async function updateAdminRole(targetEmail, newRole, updatedByEmail) {
   const validRoles = ['co_admin', 'elder_admin', 'junior_admin'];
   if (!validRoles.includes(newRole)) {
@@ -215,9 +191,9 @@ async function updateAdminRole(targetEmail, newRole, updatedByEmail) {
   try {
     const doc = await getAdminDoc(n);
     if (!doc) return { success: false, message: `${n} is not in the admin database` };
-    const updated = { ...doc, role: newRole, updated_at: new Date().toISOString() };
-    await cloudant.putDocument({ db: ADMINS_DB, docId: n, document: updated });
-    logger.info(`[AdminDB] âœ… Updated admin role: ${n} â†’ ${newRole}`);
+    const updated = { role: newRole, updated_at: new Date().toISOString() };
+    await db.batchSet(ADMINS_DB, n, updated);
+    logger.info(`[AdminDB] ✅ Updated admin role: ${n} → ${newRole}`);
     return { success: true, message: `${n} role updated to ${newRole}` };
   } catch (err) {
     logger.error('[AdminDB] Error updating admin role:', err.message);
@@ -225,7 +201,7 @@ async function updateAdminRole(targetEmail, newRole, updatedByEmail) {
   }
 }
 
-// â”€â”€â”€ List all admins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── List all admins ─────────────────────────────────────────────────────────
 async function listAdmins() {
   const result = [];
 
@@ -241,23 +217,17 @@ async function listAdmins() {
   }
 
   try {
-    const response = await cloudant.postAllDocs({
-      db:          ADMINS_DB,
-      includeDocs: true,
-    });
-    const rows = response.result.rows || [];
-    for (const row of rows) {
-      if (row.doc && !row.doc._id.startsWith('_design')) {
-        const email = row.doc.email || row.doc._id;
-        if (!getSuperAdminEmails().includes(email)) {
-          result.push({
-            _id:        row.doc._id,
-            email,
-            role:       row.doc.role || 'junior_admin',
-            isSuperAdmin: false,
-            created_at: row.doc.created_at || row.doc.addedAt || null,
-          });
-        }
+    const docs = await db.getAllDocs(ADMINS_DB);
+    for (const doc of docs) {
+      const email = doc.email || doc._id;
+      if (!getSuperAdminEmails().includes(email)) {
+        result.push({
+          _id:        doc._id,
+          email,
+          role:       doc.role || 'junior_admin',
+          isSuperAdmin: false,
+          created_at: doc.created_at || doc.addedAt || null,
+        });
       }
     }
   } catch (err) {
@@ -277,4 +247,3 @@ module.exports = {
   isSuperAdmin,
   getSuperAdminEmails,
 };
-

@@ -1,16 +1,11 @@
 // ============================================
 // CloudIQ Backend - Posts Routes
 // ============================================
-// Endpoints:
-//   GET  /api/posts       → fetch all posts (public)
-//   POST /api/posts/create → create a post (auth required)
-//   DELETE /api/posts/:id  → delete a post (owner or admin)
-//   POST /api/posts/:id/like → like/unlike a post (auth required)
 
 const express = require('express');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const cloudant = require('../services/cloudantClient');
+const db = require('../services/firestoreClient');
 const { uploadImage, uploadVideo, deleteUploadedMedia } = require('../services/mediaService');
 const { resolveSenderInfo, createNotification } = require('../services/notificationService');
 const { ensureAuthenticated, checkAdminRole, extractUserInfo } = require('../middleware/auth');
@@ -26,15 +21,6 @@ const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov']);
 
-function isCloudantRateLimit(err) {
-  const status = err?.status || err?.statusCode;
-  const message = String(err?.message || '').toLowerCase();
-  return status === 429 || message.includes('too_many_requests') || message.includes('rate limit');
-}
-
-// ─────────────────────────────────────────────
-// Multer — post images/videos (image 5 MB, video 50 MB)
-// ─────────────────────────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_VIDEO_BYTES, files: 2 },
@@ -118,7 +104,7 @@ function normalizePostMedia(post) {
 async function isCommunityModerator(userId, communityId) {
   if (!userId || !communityId) return false;
   try {
-    const community = (await cloudant.getDocument({ db: 'communities', docId: communityId })).result;
+    const community = await db.getDoc('communities', communityId);
     if (community.owner_id === userId) return true;
     if (Array.isArray(community.co_admin_ids) && community.co_admin_ids.includes(userId)) return true;
   } catch (err) {
@@ -131,7 +117,6 @@ async function isCommunityModerator(userId, communityId) {
 
 // ─────────────────────────────────────────────
 // GET /api/posts
-// Public — returns all posts, newest first
 // ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
@@ -144,19 +129,12 @@ router.get('/', async (req, res) => {
       return res.json(cached);
     }
 
-    const response = await cloudant.postView({
-      db: DB,
-      ddoc: 'posts',
-      view: 'by_created_at',
-      startKey: before || {},
-      descending: true,
-      includeDocs: true,
-      limit,
-    });
+    let filters = [];
+    if (before) {
+      filters.push(['created_at', '<', before]);
+    }
 
-    const posts = (response.result.rows || [])
-      .map((r) => r.doc)
-      .filter((doc) => doc && !doc._id.startsWith('_design'));
+    const posts = await db.queryDocs(DB, filters, 'created_at', 'desc', limit);
 
     const payload = {
       success: true,
@@ -167,16 +145,12 @@ router.get('/', async (req, res) => {
     return res.json(payload);
   } catch (err) {
     console.error('[POSTS] Fetch error:', err.message);
-    if (isCloudantRateLimit(err)) {
-      return res.status(429).json({ success: false, error: 'Cloudant rate limit reached. Please retry shortly.' });
-    }
     res.status(500).json({ success: false, error: 'Failed to fetch posts' });
   }
 });
 
 // ─────────────────────────────────────────────
 // POST /api/posts/create
-// Auth required — creates a new post
 // ─────────────────────────────────────────────
 router.post('/create', ensureAuthenticated, upload.fields([
   { name: 'image', maxCount: 1 },
@@ -191,16 +165,15 @@ router.post('/create', ensureAuthenticated, upload.fields([
       return res.status(400).json({ success: false, error: 'Content is required' });
     }
 
-    const { userId, email, username: appIdUsername } = extractUserInfo(req.user);
+    const { userId, email, username: appIdUsername } = extractUserInfo(req);
 
-    // Try to get Cloudant profile for real-time username + avatar
     let username = appIdUsername;
     let author_avatar = null;
     try {
-      const profileDoc = (await cloudant.getDocument({ db: 'users', docId: userId })).result;
+      const profileDoc = await db.getDoc('users', userId);
       if (profileDoc.username) username = profileDoc.username;
       if (profileDoc.profile_image_url) author_avatar = profileDoc.profile_image_url;
-    } catch (e) { /* profile not onboarded yet — use App ID values */ }
+    } catch (e) { }
 
     const postId = uuidv4();
 
@@ -214,7 +187,6 @@ router.post('/create', ensureAuthenticated, upload.fields([
     const videoValidationError = validatePostMediaFile(videoFile, 'video');
     if (videoValidationError) return res.status(400).json({ success: false, error: videoValidationError });
 
-    // Upload post media to Cloudinary if provided
     let image_url = null;
     let image_public_id = null;
     let video_url = null;
@@ -289,7 +261,7 @@ router.post('/create', ensureAuthenticated, upload.fields([
 
     if (communityId) {
       try {
-        const communityDoc = (await cloudant.getDocument({ db: 'communities', docId: communityId })).result;
+        const communityDoc = await db.getDoc('communities', communityId);
         community_id = communityDoc._id;
         community_name = communityDoc.name || community_name;
         community_color = communityDoc.color || null;
@@ -304,13 +276,12 @@ router.post('/create', ensureAuthenticated, upload.fields([
     const primaryMedia = media.find((item) => item.type === 'video') || media[0] || null;
 
     const newPost = {
-      _id: postId,
       user_id: userId,
       email,
       username,
-      author_avatar,          // Cloudinary URL (or null)
+      author_avatar,
       content: content.trim(),
-      image_url,              // Post image
+      image_url,
       image_public_id,
       video_url,
       video_public_id,
@@ -327,15 +298,10 @@ router.post('/create', ensureAuthenticated, upload.fields([
       created_at: new Date().toISOString(),
     };
 
-    const response = await cloudant.postDocument({ db: DB, document: newPost });
-    if (response.result.ok) {
-      postsCache.clear();
-      logger.info('[POSTS] post created', { postId, mediaType: newPost.mediaType, mediaCount: media.length });
-      res.json({ success: true, post: newPost });
-    } else {
-      await cleanupUploadedPostMedia(uploadedMedia);
-      res.status(500).json({ success: false, error: 'Cloudant insert failed' });
-    }
+    const savedPost = await db.setDoc(DB, postId, newPost);
+    postsCache.clear();
+    logger.info('[POSTS] post created', { postId, mediaType: newPost.mediaType, mediaCount: media.length });
+    res.json({ success: true, post: savedPost });
   } catch (err) {
     await cleanupUploadedPostMedia(uploadedMedia);
     console.error('[POSTS] Create error:', err.message);
@@ -345,17 +311,14 @@ router.post('/create', ensureAuthenticated, upload.fields([
 
 // ─────────────────────────────────────────────
 // DELETE /api/posts/:id
-// Auth required — owner can delete own post, admin can delete any
 // ─────────────────────────────────────────────
 router.delete('/:id', ensureAuthenticated, async (req, res) => {
   try {
     const postId = req.params.id;
 
-    // Fetch the post
     let post;
     try {
-      const docResponse = await cloudant.getDocument({ db: DB, docId: postId });
-      post = docResponse.result;
+      post = await db.getDoc(DB, postId);
     } catch (err) {
       if (err.status === 404) {
         return res.status(404).json({ success: false, error: 'Post not found' });
@@ -363,11 +326,10 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
       throw err;
     }
 
-    const { userId } = extractUserInfo(req.user);
-    const isAdmin = await checkAdminRole(req.user);
+    const { userId } = extractUserInfo(req);
+    const isAdmin = await checkAdminRole(req);
     const isCommunityMod = await isCommunityModerator(userId, post.community_id);
 
-    // Only owner or admin can delete
     if (post.user_id !== userId && !isAdmin && !isCommunityMod) {
       return res.status(403).json({ success: false, error: 'You can only delete your own posts.' });
     }
@@ -384,18 +346,10 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
       }
     }
 
-    const deleteResponse = await cloudant.deleteDocument({
-      db: DB,
-      docId: post._id,
-      rev: post._rev,
-    });
+    await db.deleteDoc(DB, post._id);
 
-    if (deleteResponse.result.ok) {
-      postsCache.clear();
-      res.json({ success: true, message: 'Post deleted' });
-    } else {
-      res.status(500).json({ success: false, error: 'Failed to delete post' });
-    }
+    postsCache.clear();
+    res.json({ success: true, message: 'Post deleted' });
   } catch (err) {
     console.error('[POSTS] Delete error:', err.message);
     res.status(500).json({ success: false, error: 'Failed to delete post' });
@@ -404,18 +358,15 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
 
 // ─────────────────────────────────────────────
 // POST /api/posts/:id/like
-// Auth required — toggles like on a post
 // ─────────────────────────────────────────────
 router.post('/:id/like', ensureAuthenticated, async (req, res) => {
   try {
     const postId = req.params.id;
-    const { userId: fromUserId, email, username: appIdUsername } = extractUserInfo(req.user);
+    const { userId: fromUserId, email, username: appIdUsername } = extractUserInfo(req);
 
-    // Fetch the post
     let post;
     try {
-      const docResponse = await cloudant.getDocument({ db: DB, docId: postId });
-      post = docResponse.result;
+      post = await db.getDoc(DB, postId);
     } catch (err) {
       if (err.status === 404) {
         return res.status(404).json({ success: false, error: 'Post not found' });
@@ -429,65 +380,52 @@ router.post('/:id/like', ensureAuthenticated, async (req, res) => {
     let liked = false;
 
     if (index === -1) {
-      // Like
       post.likes.push(email);
       liked = true;
     } else {
-      // Unlike
       post.likes.splice(index, 1);
       liked = false;
     }
 
     post.like_count = post.likes.length;
 
-    const updateResponse = await cloudant.postDocument({
-      db: DB,
-      document: post,
-    });
+    await db.setDoc(DB, postId, post);
 
-    if (updateResponse.result.ok) {
-      postsCache.clear();
-      // Create notification for post owner (only on like, not unlike, and not self-like)
-      const recipientId = post.user_id;
-      const isSelfLike = recipientId === fromUserId || (post.email && post.email === email);
+    postsCache.clear();
+    const recipientId = post.user_id;
+    const isSelfLike = recipientId === fromUserId || (post.email && post.email === email);
 
-      if (liked && recipientId && !isSelfLike) {
-        try {
-          const { senderName, senderAvatar } = await resolveSenderInfo(
-            cloudant,
-            fromUserId,
-            appIdUsername,
-            req.user?.picture || null
-          );
+    if (liked && recipientId && !isSelfLike) {
+      try {
+        const { senderName, senderAvatar } = await resolveSenderInfo(
+          fromUserId,
+          appIdUsername,
+          req.firebaseUser?.picture || null
+        );
 
-          await createNotification({
-            cloudant,
-            io: req.app.get('io'),
-            userSockets: req.app.get('userSockets'),
-            recipientId,
-            senderId: fromUserId,
-            senderName,
-            senderAvatar,
-            type: 'post_like',
-            message: `${senderName} liked your post`,
-            postId: post._id,
-            targetType: 'post',
-            targetId: post._id,
-          });
-        } catch (notifErr) {
-          console.error('[POSTS] Notification create error:', notifErr.message);
-          // Don't fail the like if notification fails
-        }
+        await createNotification({
+          io: req.app.get('io'),
+          userSockets: req.app.get('userSockets'),
+          recipientId,
+          senderId: fromUserId,
+          senderName,
+          senderAvatar,
+          type: 'post_like',
+          message: `${senderName} liked your post`,
+          postId: post._id,
+          targetType: 'post',
+          targetId: post._id,
+        });
+      } catch (notifErr) {
+        console.error('[POSTS] Notification create error:', notifErr.message);
       }
-
-      res.json({
-        success: true,
-        liked,
-        likesCount: post.like_count,
-      });
-    } else {
-      res.status(500).json({ success: false, error: 'Failed to update post' });
     }
+
+    res.json({
+      success: true,
+      liked,
+      likesCount: post.like_count,
+    });
   } catch (err) {
     console.error('[POSTS] Like error:', err.message);
     res.status(500).json({ success: false, error: 'Failed to like post' });

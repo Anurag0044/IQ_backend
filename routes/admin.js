@@ -7,10 +7,11 @@
 // POST /api/admin/add          — add admin (main_admin / co_admin only)
 // PUT  /api/admin/:id/role     — change role (hierarchy enforced)
 // DELETE /api/admin/:id        — remove admin (hierarchy enforced)
-// GET  /api/admin/dashboard    — stats stub (any admin)
+// GET  /api/admin/dashboard    — stats (any admin)
+// GET  /api/admin/me/role      — current admin's own role
 
 const express = require('express');
-const { ensureAuthenticated, ensureAdmin } = require('../middleware/auth');
+const { ensureAuthenticated, ensureAdmin, extractUserInfo } = require('../middleware/auth');
 const {
   listAdmins,
   addAdmin,
@@ -18,9 +19,9 @@ const {
   updateAdminRole,
   getAdminRole,
 } = require('../services/adminDb');
-const { extractUserInfo } = require('../middleware/auth');
-const cloudant = require('../services/cloudantClient');
+const db = require('../services/firestoreClient');
 const { adminCache } = require('../services/cacheService');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -31,7 +32,7 @@ router.use(ensureAuthenticated, ensureAdmin);
 // Helper: get requester's role
 // ─────────────────────────────────────────────
 async function requesterRole(req) {
-  const { email } = extractUserInfo(req.user);
+  const { email } = extractUserInfo(req);
   return getAdminRole(email);
 }
 
@@ -40,20 +41,22 @@ async function requesterRole(req) {
 // ─────────────────────────────────────────────
 router.get('/dashboard', async (req, res) => {
   try {
-    // Count users in Cloudant users DB
     let totalUsers = 0;
     try {
-      const info = await cloudant.getDatabaseInformation({ db: 'users' });
-      totalUsers = info.result.doc_count || 0;
-    } catch (_) { /* db may not exist yet */ }
+      totalUsers = await db.getCollectionCount('users');
+    } catch (_) { /* collection may not exist yet */ }
 
     let totalPosts = 0;
     try {
-      const info = await cloudant.getDatabaseInformation({ db: 'posts' });
-      totalPosts = info.result.doc_count || 0;
+      totalPosts = await db.getCollectionCount('posts');
     } catch (_) {}
 
-    const { email } = extractUserInfo(req.user);
+    let totalCommunities = 0;
+    try {
+      totalCommunities = await db.getCollectionCount('communities');
+    } catch (_) {}
+
+    const { email } = extractUserInfo(req);
     const myRole = await getAdminRole(email);
 
     return res.json({
@@ -61,13 +64,14 @@ router.get('/dashboard', async (req, res) => {
       data: {
         totalUsers,
         totalPosts,
+        totalCommunities,
         systemHealth: 'operational',
-        lastUpdated:  new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
         myRole,
       },
     });
   } catch (err) {
-    console.error('[ADMIN] dashboard error:', err.message);
+    logger.error('[ADMIN] dashboard error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -81,7 +85,7 @@ router.get('/list', async (req, res) => {
     const admins = await listAdmins();
     return res.json({ success: true, admins });
   } catch (err) {
-    console.error('[ADMIN] list error:', err.message);
+    logger.error('[ADMIN] list error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -92,7 +96,7 @@ router.get('/list', async (req, res) => {
 // ─────────────────────────────────────────────
 router.post('/add', async (req, res) => {
   try {
-    const { email: addedByEmail } = extractUserInfo(req.user);
+    const { email: addedByEmail } = extractUserInfo(req);
     const myRole = await getAdminRole(addedByEmail);
 
     if (!['main_admin', 'co_admin'].includes(myRole)) {
@@ -109,7 +113,7 @@ router.post('/add', async (req, res) => {
     adminCache.delete(`admin:${String(email).trim().toLowerCase()}`);
     return res.status(201).json({ success: true, message: result.message });
   } catch (err) {
-    console.error('[ADMIN] add error:', err.message);
+    logger.error('[ADMIN] add error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -120,7 +124,7 @@ router.post('/add', async (req, res) => {
 // ─────────────────────────────────────────────
 router.put('/:id/role', async (req, res) => {
   try {
-    const { email: updatedByEmail } = extractUserInfo(req.user);
+    const { email: updatedByEmail } = extractUserInfo(req);
     const { id: targetEmail } = req.params;
     const { role: newRole } = req.body;
 
@@ -133,7 +137,7 @@ router.put('/:id/role', async (req, res) => {
     adminCache.delete(`admin:${String(targetEmail).trim().toLowerCase()}`);
     return res.json({ success: true, message: result.message });
   } catch (err) {
-    console.error('[ADMIN] update role error:', err.message);
+    logger.error('[ADMIN] update role error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -144,7 +148,7 @@ router.put('/:id/role', async (req, res) => {
 // ─────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   try {
-    const { email: removedByEmail } = extractUserInfo(req.user);
+    const { email: removedByEmail } = extractUserInfo(req);
     const { id: targetEmail } = req.params;
 
     const result = await removeAdmin(targetEmail, removedByEmail);
@@ -152,7 +156,7 @@ router.delete('/:id', async (req, res) => {
     adminCache.delete(`admin:${String(targetEmail).trim().toLowerCase()}`);
     return res.json({ success: true, message: result.message });
   } catch (err) {
-    console.error('[ADMIN] delete error:', err.message);
+    logger.error('[ADMIN] delete error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -163,7 +167,7 @@ router.delete('/:id', async (req, res) => {
 // ─────────────────────────────────────────────
 router.get('/me/role', async (req, res) => {
   try {
-    const { email } = extractUserInfo(req.user);
+    const { email } = extractUserInfo(req);
     const role = await getAdminRole(email);
     return res.json({ success: true, role, email });
   } catch (err) {

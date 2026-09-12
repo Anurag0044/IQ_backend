@@ -1,20 +1,11 @@
-﻿// ============================================
+// ============================================
 // CloudIQ Backend - Tutorials Routes
 // ============================================
-// Admin-only: create, delete, upload-inline-image
-// Public:     read all / read one
-//
-// Endpoints:
-//   POST   /api/tutorials/create              â€” admin only, multipart/form-data
-//   POST   /api/tutorials/upload-inline-image â€” admin only, returns image URL
-//   GET    /api/tutorials                     â€” public
-//   GET    /api/tutorials/:id                 â€” public
-//   DELETE /api/tutorials/:id                 â€” admin only
 
 const express    = require('express');
 const multer     = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const cloudant   = require('../services/cloudantClient');
+const db         = require('../services/firestoreClient');
 const { uploadImage, uploadVideo, deleteUploadedMedia, recordTutorialMedia } = require('../services/mediaService');
 const { ensureAuthenticated, extractUserInfo, checkAdminRole } = require('../middleware/auth');
 const logger = require('../utils/logger');
@@ -22,11 +13,6 @@ const logger = require('../utils/logger');
 const router  = express.Router();
 const DB_NAME = 'tutorials';
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Multer configs
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-// Cover image/video: image 10 MB, video 50 MB
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
@@ -46,7 +32,6 @@ const upload = multer({
   },
 });
 
-// Inline content media: image 2 MB max, video 50 MB max
 const uploadInline = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
@@ -65,11 +50,6 @@ const uploadInline = multer({
   },
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Helper â€” extract Cloudinary public_id from URL
-// Handles: .../upload/v<ver>/<folder>/<name>.<ext>
-//          .../upload/<folder>/<name>.<ext>
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function extractPublicId(imageUrl) {
   if (!imageUrl) return null;
   try {
@@ -83,7 +63,7 @@ function extractPublicId(imageUrl) {
 async function isCommunityMember(userId, communityId) {
   if (!userId || !communityId) return false;
   try {
-    const community = (await cloudant.getDocument({ db: 'communities', docId: communityId })).result;
+    const community = await db.getDoc('communities', communityId);
     if (Array.isArray(community.members) && community.members.includes(userId)) return true;
   } catch (err) {
     if (err.status !== 404) {
@@ -92,12 +72,8 @@ async function isCommunityMember(userId, communityId) {
   }
 
   try {
-    const res = await cloudant.postFind({
-      db: 'community_memberships',
-      selector: { community_id: communityId, user_id: userId },
-      limit: 1,
-    });
-    return res.result.docs.length > 0;
+    const mems = await db.queryDocs('community_memberships', [['community_id', '==', communityId], ['user_id', '==', userId]], null, 'asc', 1);
+    return mems.length > 0;
   } catch (err) {
     logger.warn('[Tutorials] Membership lookup failed:', err.message);
     return false;
@@ -107,7 +83,7 @@ async function isCommunityMember(userId, communityId) {
 async function isCommunityModerator(userId, communityId) {
   if (!userId || !communityId) return false;
   try {
-    const community = (await cloudant.getDocument({ db: 'communities', docId: communityId })).result;
+    const community = await db.getDoc('communities', communityId);
     if (community.owner_id === userId) return true;
     if (Array.isArray(community.co_admin_ids) && community.co_admin_ids.includes(userId)) return true;
   } catch (err) {
@@ -118,37 +94,9 @@ async function isCommunityModerator(userId, communityId) {
   return false;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Helper â€” ensure tutorials DB + design doc exist
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-async function ensureTutorialsDb() {
-  try {
-    await cloudant.getDatabaseInformation({ db: DB_NAME });
-  } catch (err) {
-    if (err.status === 404) {
-      await cloudant.putDatabase({ db: DB_NAME });
-      logger.info('[Tutorials] Created tutorials database');
-      await cloudant.postDocument({
-        db: DB_NAME,
-        document: {
-          _id: '_design/tutorials',
-          views: {
-            by_created_at: {
-              map: 'function(doc) { if (doc.created_at) emit(doc.created_at, null); }',
-            },
-          },
-        },
-      });
-    }
-  }
-}
-
-ensureTutorialsDb().catch(console.error);
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 // POST /api/tutorials/create
-// Admin only â€” creates a new tutorial with cover image upload
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 router.post(
   '/create',
   ensureAuthenticated,
@@ -172,12 +120,9 @@ router.post(
         });
       }
 
-      const { userId, email, username } = extractUserInfo(req.user);
-      const isAdmin = await checkAdminRole(req.user);
+      const { userId, email, username } = extractUserInfo(req);
+      const isAdmin = await checkAdminRole(req);
 
-      // Authorization check:
-      // - Admins can create any tutorial (global or for a community).
-      // - Non-admins can only create tutorials for a community they are a member of.
       if (!isAdmin) {
         if (!community_id) {
           return res.status(403).json({ success: false, error: 'Only admins can create global tutorials.' });
@@ -188,16 +133,10 @@ router.post(
           return res.status(403).json({ success: false, error: 'You must be a community member to publish tutorials here.' });
         }
 
-        // Per-user tutorial creation limit for non-moderators
         const isModerator = await isCommunityModerator(userId, community_id);
         if (!isModerator) {
-          const userTutorials = await cloudant.postFind({
-            db: DB_NAME,
-            selector: { community_id, created_by_id: userId },
-            fields: ['_id'],
-          });
-
-          if (userTutorials.result.docs.length >= 3) {
+          const userTutorials = await db.queryDocs(DB_NAME, [['community_id', '==', community_id], ['created_by_id', '==', userId]]);
+          if (userTutorials.length >= 3) {
             return res.status(403).json({ success: false, error: 'You have reached the maximum of 3 tutorials for this community. Admins and co-admins can create more.' });
           }
         }
@@ -213,7 +152,6 @@ router.post(
         return res.status(400).json({ success: false, error: 'Cover video must be 50MB or smaller' });
       }
 
-      // Upload cover media to Cloudinary (if provided)
       let image_url = null;
       let public_id = null;
       let video_url = null;
@@ -253,16 +191,14 @@ router.post(
 
       const tutorialId = uuidv4();
 
-      // Build tutorial document â€” supports HTML or markdown
       const tutorial = {
-        _id:               tutorialId,
         title:             title.trim(),
         description:       description.trim(),
         content:           content?.trim() || '',
         content_markdown:  content_markdown?.trim() || '',
         content_format:    content_markdown?.trim() ? 'markdown' : 'html',
         image_url,
-        public_id,   // internal Cloudinary ID â€” NOT sent to frontend
+        public_id,
         video_url,
         video_public_id,
         category:          category || 'General',
@@ -274,14 +210,10 @@ router.post(
         created_at:        new Date().toISOString(),
       };
 
-      const response = await cloudant.postDocument({ db: DB_NAME, document: tutorial });
+      const saved = await db.setDoc(DB_NAME, tutorialId, tutorial);
 
-      if (!response.result.ok) {
-        throw new Error('Cloudant did not confirm document creation');
-      }
-
-      if (public_id) await recordTutorialMedia({ tutorialId, url: image_url, publicId: public_id, resourceType: 'image' });
-      if (video_public_id) await recordTutorialMedia({ tutorialId, url: video_url, publicId: video_public_id, resourceType: 'video' });
+      if (public_id) await recordTutorialMedia({ tutorialId: saved._id, url: image_url, publicId: public_id, resourceType: 'image' });
+      if (video_public_id) await recordTutorialMedia({ tutorialId: saved._id, url: video_url, publicId: video_public_id, resourceType: 'video' });
 
       logger.info(`[Tutorials] Created: "${title}" by ${email || 'unknown'}`);
 
@@ -289,19 +221,19 @@ router.post(
         success: true,
         message: 'Tutorial created successfully',
         data: {
-          id:          tutorial._id,
-          title:       tutorial.title,
-          description: tutorial.description,
-          content:     tutorial.content,
-          content_markdown: tutorial.content_markdown,
-          content_format: tutorial.content_format,
-          image_url:   tutorial.image_url,
-          video_url:   tutorial.video_url,
-          category:    tutorial.category,
-          tags:        tutorial.tags,
-          community_id: tutorial.community_id,
-          created_by:  tutorial.created_by,
-          created_at:  tutorial.created_at,
+          id:          saved._id,
+          title:       saved.title,
+          description: saved.description,
+          content:     saved.content,
+          content_markdown: saved.content_markdown,
+          content_format: saved.content_format,
+          image_url:   saved.image_url,
+          video_url:   saved.video_url,
+          category:    saved.category,
+          tags:        saved.tags,
+          community_id: saved.community_id,
+          created_by:  saved.created_by,
+          created_at:  saved.created_at,
         },
       });
     } catch (err) {
@@ -311,12 +243,9 @@ router.post(
   }
 );
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 // POST /api/tutorials/upload-inline-image
-// Auth required â€” uploads a single media file for use inside tutorial content
-// Body: multipart/form-data with field "image" or "media"
-// Returns: { success: true, url, public_id, resource_type }
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 router.post(
   '/upload-inline-image',
   ensureAuthenticated,
@@ -327,7 +256,7 @@ router.post(
         return res.status(400).json({ success: false, error: 'No image file provided.' });
       }
 
-      const { userId } = extractUserInfo(req.user);
+      const { userId } = extractUserInfo(req);
       const tutorialId = req.body?.tutorial_id || null;
       const isVideo = req.file.mimetype.startsWith('video/');
 
@@ -377,7 +306,7 @@ router.post(
   }
 );
 
-// Alias for new clients
+// Alias
 router.post(
   '/upload-inline-media',
   ensureAuthenticated,
@@ -388,7 +317,7 @@ router.post(
         return res.status(400).json({ success: false, error: 'No media file provided.' });
       }
 
-      const { userId } = extractUserInfo(req.user);
+      const { userId } = extractUserInfo(req);
       const tutorialId = req.body?.tutorial_id || null;
       const isVideo = req.file.mimetype.startsWith('video/');
 
@@ -438,11 +367,9 @@ router.post(
   }
 );
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 // DELETE /api/tutorials/image
-// Auth required â€” deletes an inline media asset by public_id
-// Body: { public_id: "...", resource_type?: "image"|"video" }
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 router.delete(
   '/image',
   ensureAuthenticated,
@@ -464,22 +391,15 @@ router.delete(
   }
 );
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 // GET /api/tutorials
-// Public â€” returns all tutorials, newest first
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    // NOTE: IBM Cloudant SDK requires includeDocs at TOP level, not inside allDocsQuery
-    const response = await cloudant.postAllDocs({
-      db:          DB_NAME,
-      includeDocs: true,
-    });
+    let tutorials = await db.getAllDocs(DB_NAME);
 
-    const tutorials = (response.result.rows || [])
-      .map((row) => row.doc)
-      .filter((doc) => doc && !doc._id.startsWith('_design'))
-      .map(({ public_id, _rev, ...safe }) => safe) // strip internal fields
+    tutorials = tutorials
+      .map(({ public_id, video_public_id, ...safe }) => safe)
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     logger.debug(`[Tutorials] GET all -> ${tutorials.length} tutorial(s)`);
@@ -491,10 +411,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 // PUT /api/tutorials/:id
-// Admin only â€” update title/description/content/image
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 router.put(
   '/:id',
   ensureAuthenticated,
@@ -506,11 +425,16 @@ router.put(
     const { id } = req.params;
     try {
       const { title, description, content, content_markdown, category, tags, community_id } = req.body;
-      const { userId, email } = extractUserInfo(req.user);
-      const isAdmin = await checkAdminRole(req.user);
+      const { userId, email } = extractUserInfo(req);
+      const isAdmin = await checkAdminRole(req);
 
-      // Fetch existing document (need _rev for update)
-      const existing = (await cloudant.getDocument({ db: DB_NAME, docId: id })).result;
+      let existing;
+      try {
+        existing = await db.getDoc(DB_NAME, id);
+      } catch (err) {
+        if (err.status === 404) return res.status(404).json({ success: false, error: 'Tutorial not found' });
+        throw err;
+      }
 
       const canEdit = isAdmin
         || existing.created_by === (email || '').toLowerCase()
@@ -536,7 +460,6 @@ router.put(
         return res.status(400).json({ success: false, error: 'Cover video must be 50MB or smaller' });
       }
 
-      // Replace cover image if a new file was uploaded
       if (imageFile) {
         const oldId = existing.public_id || extractPublicId(existing.image_url);
         if (oldId) {
@@ -583,7 +506,6 @@ router.put(
         : existing.tags || [];
 
       const updated = {
-        ...existing,
         title:       (title?.trim())       || existing.title,
         description: (description?.trim()) || existing.description,
         content:     (content?.trim())     || existing.content,
@@ -601,13 +523,11 @@ router.put(
         updated_at: new Date().toISOString(),
       };
 
-      // Cloudant update â€” must include _rev in the document body
-      await cloudant.putDocument({ db: DB_NAME, docId: id, document: updated });
+      const saved = await db.setDoc(DB_NAME, id, updated, { merge: true });
 
-      logger.info(`[Tutorials] Updated: "${updated.title}" (${id})`);
+      logger.info(`[Tutorials] Updated: "${saved.title}" (${id})`);
 
-      // Strip internal fields before returning
-      const { public_id: _p, _rev: _r, video_public_id: _v, ...safeData } = updated;
+      const { public_id: _p, video_public_id: _v, ...safeData } = saved;
       return res.json({ success: true, data: safeData });
     } catch (err) {
       if (err.status === 404) return res.status(404).json({ success: false, error: 'Tutorial not found' });
@@ -617,15 +537,14 @@ router.put(
   }
 );
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 // GET /api/tutorials/:id
-// Public â€” returns one tutorial by id
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    const response = await cloudant.getDocument({ db: DB_NAME, docId: id });
-    const { public_id, _rev, ...safe } = response.result;
+    const doc = await db.getDoc(DB_NAME, id);
+    const { public_id, video_public_id, ...safe } = doc;
     return res.json({ success: true, data: safe });
   } catch (err) {
     if (err.status === 404) {
@@ -636,20 +555,24 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 // DELETE /api/tutorials/:id
-// Admin only â€” deletes Cloudinary image THEN Cloudant document
-// Cloudinary failure does NOT block the Cloudant deletion
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────
 router.delete('/:id', ensureAuthenticated, async (req, res) => {
   const { id } = req.params;
   try {
-    // Step 1: Fetch document for _rev + public_id
-    const docResponse = await cloudant.getDocument({ db: DB_NAME, docId: id });
-    const doc = docResponse.result;
+    let doc;
+    try {
+      doc = await db.getDoc(DB_NAME, id);
+    } catch (err) {
+      if (err.status === 404) {
+        return res.status(404).json({ success: false, error: 'Tutorial not found' });
+      }
+      throw err;
+    }
 
-    const { userId, email } = extractUserInfo(req.user);
-    const isAdmin = await checkAdminRole(req.user);
+    const { userId, email } = extractUserInfo(req);
+    const isAdmin = await checkAdminRole(req);
     const canDelete = isAdmin
       || doc.created_by === (email || '').toLowerCase()
       || doc.created_by_id === userId
@@ -659,12 +582,8 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Not authorized to delete this tutorial' });
     }
 
-    // Step 2: Resolve Cloudinary public_id
-    //   Primary:  stored public_id field
-    //   Fallback: parse from image_url (handles legacy docs without public_id)
     const publicIdToDelete = doc.public_id || extractPublicId(doc.image_url);
 
-    // Step 3: Delete Cloudinary image â€” non-blocking, DB delete happens either way
     if (publicIdToDelete) {
       try {
         await deleteUploadedMedia(publicIdToDelete, 'image');
@@ -683,8 +602,7 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
       }
     }
 
-    // Step 4: Delete document from Cloudant
-    await cloudant.deleteDocument({ db: DB_NAME, docId: id, rev: doc._rev });
+    await db.deleteDoc(DB_NAME, id);
 
     logger.info(`[Tutorials] Deleted tutorial: "${doc.title}" (${id})`);
     return res.json({ success: true, message: `Tutorial "${doc.title}" deleted successfully` });
@@ -697,9 +615,6 @@ router.delete('/:id', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Multer error handler
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.use((err, req, res, _next) => {
   if (err instanceof multer.MulterError || err.message?.includes('Only')) {
     return res.status(400).json({ success: false, error: err.message });
@@ -709,4 +624,3 @@ router.use((err, req, res, _next) => {
 });
 
 module.exports = router;
-

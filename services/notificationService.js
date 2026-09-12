@@ -1,40 +1,40 @@
 const { v4: uuidv4 } = require('uuid');
+const db = require('./firestoreClient');
 
-function buildDedupeSelector(notification) {
-  const selector = {
-    type: notification.type,
-    user_id: notification.user_id,
-    from_user_id: notification.from_user_id,
-    read: false,
-  };
+function buildDedupeFilters(notification) {
+  const filters = [
+    ['type', '==', notification.type],
+    ['user_id', '==', notification.user_id],
+    ['from_user_id', '==', notification.from_user_id],
+    ['read', '==', false]
+  ];
 
-  if (notification.post_id) selector.post_id = notification.post_id;
-  if (notification.comment_id) selector.comment_id = notification.comment_id;
-  if (notification.target_type) selector.target_type = notification.target_type;
-  if (notification.target_id) selector.target_id = notification.target_id;
+  if (notification.post_id) filters.push(['post_id', '==', notification.post_id]);
+  if (notification.comment_id) filters.push(['comment_id', '==', notification.comment_id]);
+  if (notification.target_type) filters.push(['target_type', '==', notification.target_type]);
+  if (notification.target_id) filters.push(['target_id', '==', notification.target_id]);
 
-  return selector;
+  return filters;
 }
 
-async function resolveSenderInfo(cloudant, senderId, fallbackName, fallbackAvatar) {
+async function resolveSenderInfo(senderId, fallbackName, fallbackAvatar) {
   let senderName = fallbackName || 'User';
   let senderAvatar = fallbackAvatar || null;
 
   if (!senderId) return { senderName, senderAvatar };
 
   try {
-    const profileDoc = (await cloudant.getDocument({ db: 'users', docId: senderId })).result;
+    const profileDoc = await db.getDoc('users', senderId);
     if (profileDoc.username) senderName = profileDoc.username;
     if (profileDoc.profile_image_url) senderAvatar = profileDoc.profile_image_url;
   } catch (err) {
-    // Fall back to App ID values
+    // Fall back to provided values if not found
   }
 
   return { senderName, senderAvatar };
 }
 
 async function createNotification({
-  cloudant,
   io,
   userSockets,
   recipientId,
@@ -48,7 +48,7 @@ async function createNotification({
   targetType,
   targetId,
 }) {
-  if (!cloudant || !recipientId || !senderId || !type || !message) {
+  if (!recipientId || !senderId || !type || !message) {
     return { created: false, skipped: true, reason: 'missing_fields' };
   }
 
@@ -57,7 +57,6 @@ async function createNotification({
   }
 
   const notification = {
-    _id: uuidv4(),
     user_id: recipientId,
     from_user_id: senderId,
     sender_name: senderName || 'User',
@@ -72,21 +71,16 @@ async function createNotification({
     created_at: new Date().toISOString(),
   };
 
-  const selector = buildDedupeSelector(notification);
-  const existing = await cloudant.postFind({
-    db: 'notifications',
-    selector,
-    limit: 1,
-  });
+  const filters = buildDedupeFilters(notification);
+  const existing = await db.queryDocs('notifications', filters, null, 'asc', 1);
 
-  if (existing.result.docs.length > 0) {
-    return { created: false, notification: existing.result.docs[0] };
+  if (existing.length > 0) {
+    return { created: false, notification: existing[0] };
   }
 
-  await cloudant.postDocument({
-    db: 'notifications',
-    document: notification,
-  });
+  const id = uuidv4();
+  await db.setDoc('notifications', id, notification);
+  notification._id = id;
 
   if (io && userSockets) {
     const targetSocketId = userSockets.get(recipientId);

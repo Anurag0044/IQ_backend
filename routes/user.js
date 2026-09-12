@@ -1,23 +1,21 @@
-﻿// ============================================
+// ============================================
 // CloudIQ Backend - User Profile Routes
 // ============================================
-// GET  /api/user/profile     â€” check onboarding + return profile
-// POST /api/user/onboarding  â€” first-time setup (username, purpose, image)
-// PUT  /api/user/profile     â€” update username / profile image
+// GET  /api/user/profile     — check onboarding + return profile
+// POST /api/user/onboarding  — first-time setup (username, purpose, image)
+// PUT  /api/user/profile     — update username / profile image
 
 const express = require('express');
 const multer = require('multer');
-const cloudant = require('../services/cloudantClient');
+const db = require('../services/firestoreClient');
 const { uploadBuffer, deleteImage } = require('../services/cloudinaryService');
 const { ensureAuthenticated } = require('../middleware/auth');
 const logger = require('../utils/logger');
 
 const router = express.Router();
-const DB_NAME = 'users'; // existing Cloudant DB
+const DB_NAME = 'users';
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Multer â€” profile images (5 MB, jpeg/png/webp)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Multer — profile images (5 MB, jpeg/png/webp) ───────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -28,27 +26,13 @@ const upload = multer({
   },
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Helpers
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 function getUserId(req) {
-  // App ID stores the subject as `sub` or `id`
-  return (
-    req.user?.sub ||
-    req.user?.id ||
-    req.user?.uid ||
-    req.user?.email ||
-    (req.user?.emails && req.user.emails[0]?.value) ||
-    'unknown'
-  );
+  return req.firebaseUser?.uid || 'unknown';
 }
 
 function getUserEmail(req) {
-  return (
-    req.user?.email ||
-    (req.user?.emails && req.user.emails[0]?.value) ||
-    ''
-  ).toLowerCase();
+  return req.firebaseUser?.email || '';
 }
 
 function extractPublicId(url) {
@@ -57,21 +41,18 @@ function extractPublicId(url) {
   return match ? match[1] : null;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// GET /api/user/profile
-// Check if user is onboarded; return profile if yes
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── GET /api/user/profile ───────────────────────────────────────────────────
 router.get('/profile', ensureAuthenticated, async (req, res) => {
   try {
     const userId = getUserId(req);
 
     try {
-      const doc = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
-      const { profile_image_public_id, _rev, ...safe } = doc;
+      const doc = await db.getDoc(DB_NAME, userId);
+      const { profile_image_public_id, ...safe } = doc;
       return res.json({ success: true, is_onboarded: true, data: safe });
     } catch (err) {
       if (err.status === 404) {
-        // New user â€” not yet onboarded
+        // New user — not yet onboarded
         return res.json({
           success: true,
           is_onboarded: false,
@@ -86,18 +67,14 @@ router.get('/profile', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// GET /api/user/dashboard
-// Returns real-time timeSpent, tutorialsCount, activities
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── GET /api/user/dashboard ─────────────────────────────────────────────────
 router.get('/dashboard', ensureAuthenticated, async (req, res) => {
   try {
     const userId = getUserId(req);
 
-    // 1. Fetch user doc for time_spent + activities
     let userDoc;
     try {
-      userDoc = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
+      userDoc = await db.getDoc(DB_NAME, userId);
     } catch (err) {
       if (err.status === 404) {
         return res.json({ success: true, data: { timeSpent: 0, tutorialsCount: 0, activities: [] } });
@@ -105,11 +82,9 @@ router.get('/dashboard', ensureAuthenticated, async (req, res) => {
       throw err;
     }
 
-    // 2. Count tutorials
     let tutorialsCount = 0;
     try {
-      const tutResp = await cloudant.postAllDocs({ db: 'tutorials' });
-      tutorialsCount = (tutResp.result.rows || []).filter(r => !r.id.startsWith('_design')).length;
+      tutorialsCount = await db.getCollectionCount('tutorials');
     } catch (err) {
       logger.warn('[User] tutorials count failed:', err.message);
     }
@@ -130,72 +105,57 @@ router.get('/dashboard', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// PUT /api/user/sync-session
-// Adds elapsed minutes to time_spent, optionally logs an activity
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── PUT /api/user/sync-session ──────────────────────────────────────────────
 router.put('/sync-session', ensureAuthenticated, async (req, res) => {
-  const MAX_RETRIES = 2;
   try {
     const userId = getUserId(req);
     const { timeAdded = 0, activity, pointsAdded = 0 } = req.body;
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const existing = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
+    const existing = await db.getDoc(DB_NAME, userId);
 
-        let time_spent = (existing.time_spent || 0) + timeAdded;
-        let points = (existing.points || 0) + pointsAdded;
+    let time_spent = (existing.time_spent || 0) + timeAdded;
+    let points = (existing.points || 0) + pointsAdded;
 
-        let daily_time_spent = existing.daily_time_spent || {};
-        if (timeAdded > 0) {
-          const today = new Date().toISOString().split('T')[0];
-          daily_time_spent[today] = (daily_time_spent[today] || 0) + timeAdded;
-        }
-
-        let activities = existing.activities || [];
-        if (activity) {
-          activities.unshift({
-            title: activity.title || 'Activity',
-            desc: activity.desc || '',
-            icon: activity.icon || 'BookOpen',
-            time: new Date().toISOString(),
-          });
-          if (activities.length > 10) activities = activities.slice(0, 10);
-        }
-
-        const updated = { ...existing, time_spent, points, daily_time_spent, activities, updated_at: new Date().toISOString() };
-        // Use postDocument (not putDocument) â€” Cloudant IAM key may lack PUT permission
-        // postDocument with _id + _rev in the body performs an update
-        await cloudant.postDocument({ db: DB_NAME, document: updated });
-
-        return res.json({ success: true, data: { timeSpent: time_spent, points, dailyTimeSpent: daily_time_spent, activities } });
-      } catch (innerErr) {
-        // 409 = rev conflict, retry with fresh doc
-        if (innerErr.status === 409 && attempt < MAX_RETRIES) {
-          logger.warn(`[User] sync-session rev conflict, retrying (${attempt + 1}/${MAX_RETRIES})`);
-          continue;
-        }
-        throw innerErr;
-      }
+    let daily_time_spent = existing.daily_time_spent || {};
+    if (timeAdded > 0) {
+      const today = new Date().toISOString().split('T')[0];
+      daily_time_spent[today] = (daily_time_spent[today] || 0) + timeAdded;
     }
+
+    let activities = existing.activities || [];
+    if (activity) {
+      activities.unshift({
+        title: activity.title || 'Activity',
+        desc: activity.desc || '',
+        icon: activity.icon || 'BookOpen',
+        time: new Date().toISOString(),
+      });
+      if (activities.length > 10) activities = activities.slice(0, 10);
+    }
+
+    const updatedFields = {
+      time_spent,
+      points,
+      daily_time_spent,
+      activities,
+      updated_at: new Date().toISOString()
+    };
+
+    await db.setDoc(DB_NAME, userId, updatedFields, { merge: true });
+
+    return res.json({ success: true, data: { timeSpent: time_spent, points, dailyTimeSpent: daily_time_spent, activities } });
   } catch (err) {
-    logger.error('[User] sync-session error:', err.status, err.message);
+    logger.error('[User] sync-session error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// GET /api/user/courses (legacy stub)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── GET /api/user/courses (legacy stub) ─────────────────────────────────────
 router.get('/courses', ensureAuthenticated, (req, res) => {
   res.json({ success: true, data: { enrolled: [], recommended: [], completed: [] } });
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// POST /api/user/onboarding
-// First-time user setup â€” creates Cloudant document
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── POST /api/user/onboarding ───────────────────────────────────────────────
 router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -206,7 +166,6 @@ router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), 
       return res.status(400).json({ success: false, error: 'Username is required.' });
     }
 
-    // Upload profile image to Cloudinary
     let profile_image_url = null;
     let profile_image_public_id = null;
 
@@ -217,7 +176,6 @@ router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), 
     }
 
     const userDoc = {
-      _id: userId,
       email,
       username: username.trim(),
       professional_role: professional_role?.trim() || '',
@@ -230,13 +188,12 @@ router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), 
       updated_at: new Date().toISOString(),
     };
 
-    const response = await cloudant.postDocument({ db: DB_NAME, document: userDoc });
-
-    if (!response.result.ok) throw new Error('Cloudant did not confirm document creation');
+    await db.setDoc(DB_NAME, userId, userDoc);
 
     logger.info(`[User] Onboarding complete: ${username} (${email})`);
 
     const { profile_image_public_id: _p, ...safe } = userDoc;
+    safe._id = userId;
     return res.status(201).json({ success: true, data: safe });
   } catch (err) {
     logger.error('[User] Onboarding error:', err.message);
@@ -244,23 +201,18 @@ router.post('/onboarding', ensureAuthenticated, upload.single('profile_image'), 
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// PUT /api/user/profile
-// Update username and/or profile image
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── PUT /api/user/profile ───────────────────────────────────────────────────
 router.put('/profile', ensureAuthenticated, upload.single('profile_image'), async (req, res) => {
   try {
     const userId = getUserId(req);
     const { username, professional_role } = req.body;
 
-    // Fetch existing document (_rev required for Cloudant update)
-    const existing = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
+    const existing = await db.getDoc(DB_NAME, userId);
 
     let profile_image_url = existing.profile_image_url;
     let profile_image_public_id = existing.profile_image_public_id;
 
     if (req.file) {
-      // Delete old Cloudinary image (non-blocking)
       const oldId = existing.profile_image_public_id || extractPublicId(existing.profile_image_url);
       if (oldId) {
         try { await deleteImage(oldId); }
@@ -271,8 +223,7 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
       profile_image_public_id = result.public_id;
     }
 
-    const updated = {
-      ...existing,
+    const updates = {
       username: username?.trim() || existing.username,
       professional_role: professional_role !== undefined
         ? professional_role.trim()
@@ -282,10 +233,10 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
       updated_at: new Date().toISOString(),
     };
 
-    await cloudant.postDocument({ db: DB_NAME, document: updated });
-    logger.info(`[User] Profile updated: ${updated.username} (${userId})`);
+    await db.setDoc(DB_NAME, userId, updates, { merge: true });
+    logger.info(`[User] Profile updated: ${updates.username} (${userId})`);
 
-    const { profile_image_public_id: _p, _rev: _r, ...safe } = updated;
+    const { profile_image_public_id: _p, ...safe } = { ...existing, ...updates };
     return res.json({ success: true, data: safe });
   } catch (err) {
     if (err.status === 404) {
@@ -296,14 +247,11 @@ router.put('/profile', ensureAuthenticated, upload.single('profile_image'), asyn
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// DELETE /api/user/profile-image
-// Remove profile picture â€” clears Cloudinary + nulls DB field
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── DELETE /api/user/profile-image ──────────────────────────────────────────
 router.delete('/profile-image', ensureAuthenticated, async (req, res) => {
   try {
     const userId = getUserId(req);
-    const existing = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
+    const existing = await db.getDoc(DB_NAME, userId);
 
     const publicId = existing.profile_image_public_id || extractPublicId(existing.profile_image_url);
     if (publicId) {
@@ -311,16 +259,16 @@ router.delete('/profile-image', ensureAuthenticated, async (req, res) => {
       catch (e) { logger.error('[User] Cloudinary image delete failed:', e.message); }
     }
 
-    const updated = {
-      ...existing,
+    const updates = {
       profile_image_url: null,
       profile_image_public_id: null,
       updated_at: new Date().toISOString(),
     };
-    await cloudant.postDocument({ db: DB_NAME, document: updated });
+    
+    await db.setDoc(DB_NAME, userId, updates, { merge: true });
 
     logger.info(`[User] Profile image removed for: ${userId}`);
-    const { profile_image_public_id: _p, _rev: _r, ...safe } = updated;
+    const { profile_image_public_id: _p, ...safe } = { ...existing, ...updates };
     return res.json({ success: true, data: safe });
   } catch (err) {
     if (err.status === 404) return res.status(404).json({ success: false, error: 'Profile not found.' });
@@ -329,33 +277,26 @@ router.delete('/profile-image', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// DELETE /api/user/account
-// Permanently delete: Cloudinary image + Cloudant doc + session
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── DELETE /api/user/account ────────────────────────────────────────────────
 router.delete('/account', ensureAuthenticated, async (req, res) => {
   try {
     const userId = getUserId(req);
 
-    // Fetch existing doc (may not exist if user never onboarded)
     try {
-      const existing = (await cloudant.getDocument({ db: DB_NAME, docId: userId })).result;
+      const existing = await db.getDoc(DB_NAME, userId);
 
-      // Delete Cloudinary profile image
       const publicId = existing.profile_image_public_id || extractPublicId(existing.profile_image_url);
       if (publicId) {
         try { await deleteImage(publicId); }
         catch (e) { logger.error('[User] Cloudinary delete failed during account deletion:', e.message); }
       }
 
-      // Delete Cloudant document
-      await cloudant.deleteDocument({ db: DB_NAME, docId: userId, rev: existing._rev });
+      await db.deleteDoc(DB_NAME, userId);
       logger.info(`[User] Account deleted from Cloudant: ${userId}`);
     } catch (err) {
-      if (err.status !== 404) throw err; // 404 = no profile, still destroy session
+      if (err.status !== 404) throw err;
     }
 
-    // Destroy session
     req.session.destroy(() => {
       res.clearCookie('connect.sid');
       return res.json({ success: true, message: 'Account permanently deleted.' });
@@ -367,4 +308,3 @@ router.delete('/account', ensureAuthenticated, async (req, res) => {
 });
 
 module.exports = router;
-

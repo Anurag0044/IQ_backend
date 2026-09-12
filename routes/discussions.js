@@ -1,14 +1,11 @@
 // ============================================
 // CloudIQ Backend - Discussion Routes
 // ============================================
-// Discussions use Firebase Firestore for channels, messages, reactions,
-// unread states, typing, and presence. Cloudant remains in use for the
-// existing community, membership, and admin authorization boundaries.
 
 const express = require('express');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const cloudant = require('../services/cloudantClient');
+const db = require('../services/firestoreClient');
 const firebaseService = require('../services/firebaseService');
 const { uploadDiscussionMedia, deleteMedia } = require('../services/cloudinaryService');
 const { ensureAuthenticated, extractUserInfo, checkAdminRole } = require('../middleware/auth');
@@ -117,7 +114,7 @@ async function getCommunityOr404(communityId, { bustCache = false } = {}) {
   }
 
   try {
-    const doc = (await cloudant.getDocument({ db: DB_COMMUNITIES, docId: communityId })).result;
+    const doc = await db.getDoc(DB_COMMUNITIES, communityId);
     communityCache.set(cacheKey, doc);
     return doc;
   } catch (err) {
@@ -141,34 +138,20 @@ async function isCommunityMember(userId, community) {
   }
 
   try {
-    const res = await cloudant.postView({
-      db: DB_MEMBERSHIPS,
-      ddoc: 'community_memberships',
-      view: 'by_community',
-      key: [community._id, userId],
-      limit: 1,
-    });
-    const isMember = (res.result.rows || []).length > 0;
-    if (isMember) membershipCache.set(cacheKey, true);
-    if (isMember) logger.debug('[FIREBASE] member validated');
-    return isMember;
+    const docId = `${community._id}_${userId}`;
+    const mem = await db.getDoc(DB_MEMBERSHIPS, docId);
+    if (mem) {
+      membershipCache.set(cacheKey, true);
+      logger.debug('[FIREBASE] member validated');
+      return true;
+    }
   } catch (err) {
     logger.warn('[DISCUSSIONS] Membership lookup failed:', err.message);
   }
 
   try {
-    const fallback = await cloudant.postFind({
-      db: DB_MEMBERSHIPS,
-      selector: {
-        $and: [
-          { $or: [{ community_id: community._id }, { communityId: community._id }] },
-          { $or: [{ user_id: userId }, { userId }] },
-        ],
-      },
-      limit: 1,
-      fields: ['_id'],
-    });
-    const isMember = (fallback.result.docs || []).length > 0;
+    const fallback = await db.queryDocs(DB_MEMBERSHIPS, [['community_id', '==', community._id], ['user_id', '==', userId]]);
+    const isMember = fallback.length > 0;
     if (isMember) {
       membershipCache.set(cacheKey, true);
       logger.debug('[FIREBASE] member validated');
@@ -180,15 +163,15 @@ async function isCommunityMember(userId, community) {
   }
 }
 
-async function getCachedAdminStatus(user) {
-  const { email } = extractUserInfo(user);
+async function getCachedAdminStatus(req) {
+  const { email } = extractUserInfo(req);
   if (!email) return false;
 
   const cacheKey = `admin:${email.toLowerCase()}`;
   const cached = adminCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
-  const isAdmin = await checkAdminRole(user);
+  const isAdmin = await checkAdminRole(req);
   adminCache.set(cacheKey, isAdmin);
   return isAdmin;
 }
@@ -222,8 +205,8 @@ function canAccessChannel({ channel, isAdmin, isMod }) {
 }
 
 async function authorizeChannelAccess(req, channelId) {
-  const { userId } = extractUserInfo(req.user);
-  const isAdmin = await getCachedAdminStatus(req.user);
+  const { userId } = extractUserInfo(req);
+  const isAdmin = await getCachedAdminStatus(req);
   const channel = await getChannelOr404(channelId);
   if (!channel) return { ok: false, status: 404, error: 'Channel not found' };
 
@@ -288,8 +271,8 @@ async function ensureDefaultChannel(community) {
 // GET /api/discussions/communities/:communityId/channels
 router.get('/communities/:communityId/channels', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
-    const isAdmin = await getCachedAdminStatus(req.user);
+    const { userId } = extractUserInfo(req);
+    const isAdmin = await getCachedAdminStatus(req);
     const community = await getCommunityOr404(req.params.communityId, { bustCache: true });
     if (!community) return res.status(404).json({ success: false, error: 'Community not found' });
 
@@ -323,8 +306,8 @@ router.get('/communities/:communityId/channels', ensureAuthenticated, async (req
 router.post('/communities/:communityId/channels', ensureAuthenticated, async (req, res) => {
   try {
     const { name, topic, type, visibility, allowed_member_ids } = req.body || {};
-    const { userId } = extractUserInfo(req.user);
-    const isAdmin = await getCachedAdminStatus(req.user);
+    const { userId } = extractUserInfo(req);
+    const isAdmin = await getCachedAdminStatus(req);
     const community = await getCommunityOr404(req.params.communityId, { bustCache: true });
     if (!community) return res.status(404).json({ success: false, error: 'Community not found' });
 
@@ -370,8 +353,8 @@ router.post('/communities/:communityId/channels', ensureAuthenticated, async (re
 // DELETE /api/discussions/communities/:communityId/channels/:channelId
 router.delete('/communities/:communityId/channels/:channelId', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
-    const isAdmin = await getCachedAdminStatus(req.user);
+    const { userId } = extractUserInfo(req);
+    const isAdmin = await getCachedAdminStatus(req);
     const community = await getCommunityOr404(req.params.communityId, { bustCache: true });
     if (!community) return res.status(404).json({ success: false, error: 'Community not found' });
 
@@ -427,14 +410,14 @@ router.post('/channels/:channelId/messages', ensureAuthenticated, async (req, re
     const auth = await authorizeChannelAccess(req, req.params.channelId);
     if (!auth.ok) return res.status(auth.status).json({ success: false, error: auth.error });
 
-    const { username } = extractUserInfo(req.user);
+    const { username } = extractUserInfo(req);
     const messageDoc = {
       _id: uuidv4(),
       channel_id: auth.channel._id || auth.channel.id,
       community_id: auth.channel.community_id || auth.channel.communityId,
       sender_id: auth.userId,
       sender_name: username,
-      sender_avatar: getUserAvatar(req.user),
+      sender_avatar: getUserAvatar(req.firebaseUser),
       type: 'text',
       content: String(content).trim(),
       media: null,
@@ -513,14 +496,14 @@ router.post('/channels/:channelId/media', ensureAuthenticated, discussionUpload,
       });
     }
 
-    const { username } = extractUserInfo(req.user);
+    const { username } = extractUserInfo(req);
     const messageDoc = {
       _id: messageId,
       channel_id: channelId,
       community_id: communityId,
       sender_id: auth.userId,
       sender_name: username,
-      sender_avatar: getUserAvatar(req.user),
+      sender_avatar: getUserAvatar(req.firebaseUser),
       type: messageType,
       content: null,
       text: '',
@@ -714,8 +697,8 @@ router.post('/channels/:channelId/read', ensureAuthenticated, async (req, res) =
 
 router.get('/communities/:communityId/unreads', ensureAuthenticated, async (req, res) => {
   try {
-    const { userId } = extractUserInfo(req.user);
-    const isAdmin = await getCachedAdminStatus(req.user);
+    const { userId } = extractUserInfo(req);
+    const isAdmin = await getCachedAdminStatus(req);
     const community = await getCommunityOr404(req.params.communityId);
     const access = await ensureCanAccessCommunity(userId, community, isAdmin);
     if (!access.ok) return res.status(access.status).json({ success: false, error: access.error });

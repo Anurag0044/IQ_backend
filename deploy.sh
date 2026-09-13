@@ -3,17 +3,15 @@ echo "Building env vars securely..."
 
 ENV_VARS="NODE_ENV=production"
 
-# Read the .env file line by line safely (ignoring comments)
 while IFS='=' read -r key value; do
-  if [[ -z "$key" ]] || [[ "$key" == \#* ]]; then
+  # Skip empty lines, comments, and the reserved PORT variable
+  if [[ -z "$key" ]] || [[ "$key" == \#* ]] || [[ "$key" == "PORT" ]]; then
     continue
   fi
-  
-  # Remove surrounding quotes from the value
+
   value="${value%\"}"
   value="${value#\"}"
-  
-  # Use a tilde (~) as the separator so it doesn't conflict with email addresses
+
   ENV_VARS="${ENV_VARS}~${key}=${value}"
 done < .env
 

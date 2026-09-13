@@ -1,7 +1,6 @@
 #!/bin/bash
 echo "Building env vars securely..."
 
-# Start with NODE_ENV
 ENV_VARS="NODE_ENV=production"
 
 # Read the .env file line by line safely (ignoring comments)
@@ -14,8 +13,8 @@ while IFS='=' read -r key value; do
   value="${value%\"}"
   value="${value#\"}"
   
-  # Append to our list using @ as the safe separator
-  ENV_VARS="${ENV_VARS}@${key}=${value}"
+  # Use a tilde (~) as the separator so it doesn't conflict with email addresses
+  ENV_VARS="${ENV_VARS}~${key}=${value}"
 done < .env
 
 echo "Deploying to Cloud Run..."
@@ -24,4 +23,4 @@ gcloud run deploy cloudiq-backend \
   --region asia-southeast1 \
   --port 8080 \
   --allow-unauthenticated \
-  --set-env-vars "^@^${ENV_VARS}"
+  --set-env-vars "^~^${ENV_VARS}"
